@@ -1,0 +1,35 @@
+node_modules/
+wb/test/out/
+wb/.pocli-state.json
+prototype/out/*.tmp
+*.log
+.DS_Store
+Thumbs.db
+
+# 分发包是构建产物（node wb/tools/build-dist.mjs 重建），不入库 —— 
+# 之前入库导致 install.bat 的旧目录名 bug 一直漏不出去
+dist/
+
+# bridge 构建清单（由 node bridge/build.mjs 生成）
+bridge/build/MANIFEST.json
+
+# 技能运行时状态（python CLI / pocli 都会生成，属于本机数据）
+.state.json
+__fix_*.py
+
+# ---------------------------------------------------------------------------
+# 内部示例数据（不属于代码，不随公开仓库分发）
+#   data/                     —— 示例图导出的节点/泳道全量
+#   docs/analysis/            —— 示意图的结构解析、excalidraw 副本
+# 这些本机资料已移到仓库外单独保存。
+# ---------------------------------------------------------------------------
+data/
+docs/analysis/
+
+# 第三方浏览器扩展（DSH Browser Control 由插件市场安装，非本项目原创，
+# 不随仓库分发。安装方式见 docs/ 里的安装指南：从插件市场自行安装）
+dsh/浏览器扩展/
+
+# 备份 / 归档
+_backup*/
+*.bundle

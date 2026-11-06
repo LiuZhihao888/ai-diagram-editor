@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Bridge — build artifacts & verify no drift
+        working-directory: bridge
+        run: |
+          npm ci
+          node build.mjs
+          node build.mjs --check
+
+      - name: DSH skill — offline assertions & parity
+        working-directory: dsh/skill/dsh-processon-diagram-editor
+        run: |
+          node test/selftest.mjs
+          node test/parity.mjs
+
+      - name: WorkBuddy — offline assertions
+        working-directory: wb
+        run: |
+          npm ci
+          node test/selftest.mjs

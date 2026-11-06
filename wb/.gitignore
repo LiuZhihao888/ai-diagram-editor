@@ -1,0 +1,4 @@
+node_modules/
+.pocli-state.json
+test/out/
+.playwright-cli/

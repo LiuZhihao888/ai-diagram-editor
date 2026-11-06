@@ -1,0 +1,17 @@
+{
+  "name": "pobridge",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "ProcessOn 运行时桥接层：单一源码 + 可复现构建",
+  "scripts": {
+    "build": "node build.mjs",
+    "check": "node build.mjs --check"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "esbuild": "^0.28.2"
+  }
+}

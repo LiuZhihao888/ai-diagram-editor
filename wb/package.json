@@ -1,0 +1,20 @@
+{
+  "name": "processon-pocli",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "ProcessOn 画布增量改图 CLI（Playwright 后端，零 DSH 依赖）",
+  "bin": {
+    "pocli": "./bin/pocli.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "smoke": "node test/smoke.mjs",
+    "selftest": "node test/selftest.mjs"
+  },
+  "dependencies": {
+    "playwright-core": "^1.64.1"
+  }
+}
