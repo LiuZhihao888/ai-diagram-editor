@@ -27,6 +27,7 @@ jobs:
         run: |
           node test/selftest.mjs
           node test/parity.mjs
+          node test/verify-pool.mjs
 
       - name: WorkBuddy — offline assertions
         working-directory: wb

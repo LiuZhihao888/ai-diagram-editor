@@ -97,6 +97,32 @@ async function probe(file, label) {
 
   out.viewBox = !!B.getViewBox().w;
 
+  out.poolKeys = ['getPoolRows','createPool','setPoolRows'].filter(function (k) { return typeof B[k] !== 'function'; });
+  var cp = B.createPool({ id: 'poolX', title: '测试池', x: 10, y: 20, w: 1000,
+    rows: [{ name: '角色A', height: 100 }, { name: '角色B', height: 150 }, '角色C'],
+    headerWidth: 56 });
+  out.poolCreated = cp.rowCount === 3;
+  out.poolTotalH = cp.totalHeight;            // 100+150+200 = 450
+  var gp = B.getPoolRows('poolX');
+  out.poolRowCount = gp.rowCount;
+  out.poolChildrenLen = gp.childrenLength;
+  out.poolLane0 = { name: elements['poolX_lane_0'].name, parent: elements['poolX_lane_0'].parent,
+    y: elements['poolX_lane_0'].props.y, h: elements['poolX_lane_0'].props.h,
+    text: elements['poolX_lane_0'].textBlock[0].text };
+  out.poolLane1Y = elements['poolX_lane_1'].props.y;   // 20+100=120
+  out.poolTitle = elements['poolX'].textBlock[0].text;
+  out.poolHeaderWidth = elements['poolX'].props.height[0];
+  var s5 = B.setPoolRows('poolX', ['A','B','C','D','E'], { headerWidth: 56 });
+  out.pool5 = { rowCount: s5.rowCount, added: s5.added, updated: s5.updated, removed: s5.removed };
+  out.pool5H = elements['poolX'].props.h;
+  var s2 = B.setPoolRows('poolX', [{ name: 'X', height: 80 }, { name: 'Y', height: 120 }], {});
+  out.pool2 = { rowCount: s2.rowCount, added: s2.added, removed: s2.removed };
+  out.pool2H = elements['poolX'].props.h;
+  out.pool2Names = elements['poolX_lane_0'].textBlock[0].text + '/' + elements['poolX_lane_1'].textBlock[0].text;
+  // 边界：非法输入应抛错而不是静默改坏画布
+  out.guardEmptyRows = false; try { B.createPool({ rows: [] }); } catch (e) { out.guardEmptyRows = true; }
+  out.guardBadPool = false; try { B.setPoolRows('n3', ['A']); } catch (e) { out.guardBadPool = true; }
+
   // 8) clampIntoView 自证：请求坐标 vs 实际坐标
   // 注意：第 7 步把 viewBox 改成了 100x60，这里必须先恢复，否则 100/200 也会被夹
   ctx.Utils.canvasViewBox = { x: 0, y: 0, w: 1200, h: 900 };
@@ -156,6 +182,11 @@ const KEYS = [
   'clampReportsRequested', 'clampReportsActual', 'clampFlagFalseWhenFit',
   'clampFlagTrueWhenForced', 'focusUsesScroll', 'focusNoFit',
   'focusReportsActual', 'viewBoxAssertsNaN',
+  // 泳道池行数控制（与 DSH/WorkBuddy 两份产物同步校验）
+  'poolKeys', 'poolCreated', 'poolTotalH', 'poolRowCount', 'poolChildrenLen',
+  'poolLane0', 'poolLane1Y', 'poolTitle', 'poolHeaderWidth',
+  'pool5', 'pool5H', 'pool2', 'pool2H', 'pool2Names',
+  'guardEmptyRows', 'guardBadPool',
 ];
 let drift = [];
 for (const k of KEYS) if (JSON.stringify(min[k]) !== JSON.stringify(iife[k])) drift.push(k + ': min=' + min[k] + ' iife=' + iife[k]);

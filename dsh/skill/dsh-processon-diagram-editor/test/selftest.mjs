@@ -123,7 +123,7 @@ ok('pobridge.min.js 不泄漏 CommonJS', () => {
 });
 ok('pobridge.min.js 导出齐全', () => {
   const src = fs.readFileSync(MIN, 'utf8');
-  for (const k of ['readGraph', 'createNode', 'updateNode', 'removeNodes', 'createEdge', 'getViewBox', 'clampIntoView', 'focusRect']) {
+  for (const k of ['readGraph', 'createNode', 'updateNode', 'removeNodes', 'createEdge', 'getViewBox', 'clampIntoView', 'focusRect', 'getPoolRows', 'createPool', 'setPoolRows', 'horizontalPool', 'horizontalLane']) {
     assert.ok(src.includes(k), '缺导出: ' + k);
   }
 });
@@ -189,8 +189,10 @@ ok('bookmarklet.txt 是构建产物且版本正确', () => {
   const dec = decodeURIComponent(raw.replace(/^javascript:/, ''));
   syntaxOk(dec);
   // 桥接层版本一致：margin 60 + 视口退化兜底（曾经这里是 margin 40 的旧版）
-  assert.match(dec, /a=60/, '书签里的 clamp margin 不是 60，说明用的是旧桥接层');
-  assert.match(dec, /e\.w-[a-z]\)\/2/, '书签缺视口退化兜底');
+  // 不写死压缩后的变量名（esbuild 每次会重命名），只断言语义常量与公式。
+  assert.match(dec, /[,;=]60[,;]/, '书签里的 clamp margin 不是 60，说明用的是旧桥接层');
+  assert.ok(!/[,;=]40[,;]/.test(dec), '书签出现 margin=40 的旧版特征');
+  assert.match(dec, /\.w-[a-zA-Z]\)\s*\/\s*2|\.w-[a-zA-Z]\)\s*\/2/, '书签缺视口退化兜底');
   assert.match(dec, /__dc_toast__/, '书签缺注入成功提示条');
 });
 
@@ -201,6 +203,20 @@ ok('bookmarklet.txt 指向真正的 POBridge', () => {
   for (const k of ['readGraph', 'createNode', 'updateNode', 'removeNodes', 'createEdge', 'getViewBox']) {
     assert.ok(dec.includes(k), '书签缺导出: ' + k);
   }
+});
+
+// ---------------------------------------------------------------- [池 API 增强]
+for (const name of ['getPoolRowsExpr', 'createPoolExpr', 'setPoolRowsExpr', 'removePoolExpr']) {
+  ok('池片段可编译: ' + name, () => syntaxOk(P[name]('example_pool_0', ['A','B'])));
+}
+ok('removePoolExpr 拒绝非 ai_ 池', () => {
+  assert.match(P.removePoolExpr('example_pool_0'), /REFUSE_NON_AI/);
+});
+ok('getPoolRowsExpr 带 NO_BRIDGE 守卫', () => {
+  assert.match(P.getPoolRowsExpr('example_pool_0'), /NO_BRIDGE/);
+});
+ok('createPoolExpr 带重复 id 守卫', () => {
+  assert.match(P.createPoolExpr({ id: 'ai_pool_x', rows: ['A'] }), /DUPLICATE_ID/);
 });
 
 // ---------------------------------------------------------------- 汇总

@@ -174,6 +174,64 @@ export function focusExpr(ids) {
   ].join('\n');
 }
 
+/** 只读：读一个泳道池的行数/每行字段（不写画布，验证机制首选）。 */
+export function getPoolRowsExpr(poolId) {
+  return [
+    '(function(id){',
+    "  if (typeof window.POBridge !== 'object') return JSON.stringify({error:'NO_BRIDGE'});",
+    "  try {",
+    "    var r = POBridge.getPoolRows(id);",
+    "    if (!r) return JSON.stringify({error:'POOL_NOT_FOUND', id: id});",
+    "    return JSON.stringify(r);",
+    "  } catch(e) { return JSON.stringify({error:'GET_FAILED', message:String(e && e.message || e)}); }",
+    '})(' + JSON.stringify(poolId) + ')',
+  ].join('\n');
+}
+
+/** 创建「一个池 + N 行」的泳道池（写操作；id 由调用方生成以便超时探测/回滚）。 */
+export function createPoolExpr(o) {
+  return [
+    '(function(o){',
+    "  if (typeof window.POBridge !== 'object') return JSON.stringify({error:'NO_BRIDGE'});",
+    "  if (window.Model.define.elements[o.id]) return JSON.stringify({error:'DUPLICATE_ID', id: o.id});",
+    "  try {",
+    "    var r = POBridge.createPool(o);",
+    "    return JSON.stringify(r);",
+    "  } catch(e) { return JSON.stringify({error:'CREATE_FAILED', message:String(e && e.message || e)}); }",
+    '})(' + JSON.stringify(o) + ')',
+  ].join('\n');
+}
+
+/** 把已有泳道池改成 N 行（写操作；rows 长度 1..50）。 */
+export function setPoolRowsExpr(poolId, rows, opts) {
+  return [
+    '(function(id, rows, opts){',
+    "  if (typeof window.POBridge !== 'object') return JSON.stringify({error:'NO_BRIDGE'});",
+    "  if (!window.Model.define.elements[id]) return JSON.stringify({error:'POOL_NOT_FOUND', id: id});",
+    "  try {",
+    "    var r = POBridge.setPoolRows(id, rows, opts || {});",
+    "    return JSON.stringify(r);",
+    "  } catch(e) { return JSON.stringify({error:'SET_FAILED', message:String(e && e.message || e)}); }",
+    '})(' + JSON.stringify(poolId) + ', ' + JSON.stringify(rows) + ', ' + JSON.stringify(opts || {}) + ')',
+  ].join('\n');
+}
+
+/** 删除一个池及其全部 lane（写操作；仅删 ai_ 前缀的测试池，用于清理）。 */
+export function removePoolExpr(poolId) {
+  return [
+    '(function(id){',
+    "  if (typeof window.POBridge !== 'object') return JSON.stringify({error:'NO_BRIDGE'});",
+    "  if (!/^ai_/.test(id)) return JSON.stringify({error:'REFUSE_NON_AI', id: id});",
+    "  var D = window.Model.define.elements, p = D[id];",
+    "  if (!p) return JSON.stringify({error:'POOL_NOT_FOUND', id: id});",
+    "  var ids = [id].concat((p.children || []).filter(function(c){ return !!D[c]; }));",
+    "  var r = POBridge.removeNodes(ids);",
+    "  var left = ids.filter(function(i){ return !!D[i]; });",
+    "  return JSON.stringify({removed: r.removed, left: left});",
+    '})(' + JSON.stringify(poolId) + ')',
+  ].join('\n');
+}
+
 /** 视口范围，用来解释"坐标为什么被夹"。 */
 export const VIEWBOX = [
   '(function(){',

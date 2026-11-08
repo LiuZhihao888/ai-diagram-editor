@@ -8,6 +8,9 @@
  *   updateNode(id, patch)  修改节点属性/样式
  *   removeNodes([ids])     删除节点
  *   createEdge(opts)       创建连线
+ *   getPoolRows(poolId)    只读：读池行数 / 每行字段
+ *   createPool(opts)       创建「一个池 + N 行」的泳道池
+ *   setPoolRows(id,rows)   把已有泳道池改成 N 行
  *
  * 关键机制（都是踩坑换来的）：
  *   1. 必须走 MessageSource.executeMessages(action, init=true)
@@ -311,6 +314,363 @@
     return { id: edge.id };
   }
 
+  // ---------- 泳道池 / 行数控制 ----------
+  // 【线上示例图只读实测结论（泳道池机制）】
+  //   * 一个泳道池 = 1 个 horizontalPool 元素；池内多行 = 多个 horizontalLane 子元素。
+  //     行数 = pool.children 数组长度；每个 lane 的 parent = pool.id，
+  //     attribute.container = true，category = 'lane'。
+  //     示例池 example_pool_0 的 children 有 20 个 lane id（就是 20 行），
+  //     池 props.h = 4000 = 20 x 200（每行 lane.props.h）。
+  //   * 全元素扫描无 rows / laneCount / lanes / rowCount 之类专门字段 —— 行数只由 children 决定。
+  //   * props.height=[56] 不是行数也不是行高：它是左侧表头列宽，height[0] 被 path
+  //     ({x:'height[0]',action:'line'}) 与 textBlock.position.w='height[0]' 引用。
+  //     铁证：池 props.x=87，lane props.x=143 = 87+56。数组长度恒为 1，与行数无关。
+  //   * 表头文字按行分布：每一行 lane 自带 textBlock[0].text（如「角色A（审批）」），
+  //     position = {w:'height[0]',x:0,h:'h-20',y:10}；池自身 textBlock 是池标题。
+  //   * lane.y 自上而下按各行高堆叠（142,342,542,...，步长 200）。
+  // 严禁用多个独立 horizontalPool 拼出多行 —— 那不是泳道池，是多个池。
+  function lanePath() {
+    return [
+      { fillStyle: { type: 'none' }, actions: [
+        { x: '0', action: 'move', y: '0' },
+        { x: 'w', action: 'line', y: '0' },
+        { x: 'w', action: 'line', y: 'h' },
+        { x: '0', action: 'line', y: 'h' },
+        { action: 'close' }
+      ] },
+      { actions: [
+        { x: 0, action: 'move', y: 0 },
+        { x: 'height[0]', action: 'line', y: 0 },
+        { x: 'height[0]', action: 'line', y: 'h' },
+        { x: 0, action: 'line', y: 'h' },
+        { action: 'close' }
+      ] }
+    ];
+  }
+
+  function laneTextBlock(text) {
+    return [{ position: { w: 'height[0]', x: 0, h: 'h-20', y: 10 }, text: text || '' }];
+  }
+
+  function laneAttribute(extra) {
+    var a = {
+      container: true, rotatable: false, visible: true,
+      fixedLink: false, collapsable: false, collapsed: false,
+      linkable: false, markerOffset: 5
+    };
+    if (extra) Object.keys(extra).forEach(function (k) { a[k] = extra[k]; });
+    return a;
+  }
+
+  /** 造一个原生 horizontalLane 子元素（不落盘，供 createPool / setPoolRows 复用）。 */
+  function buildLane(o) {
+    var p = o.props || {};
+    return {
+      id: o.id,
+      name: 'horizontalLane',
+      title: '泳道',
+      parent: o.parent || '',
+      container: '',
+      link: '',
+      children: [],
+      shapeStyle: { alpha: 1 },
+      fillStyle: o.fillStyle || {},
+      lineStyle: o.lineStyle || {},
+      fontStyle: o.fontStyle || {},
+      textBlock: laneTextBlock(o.text),
+      anchors: [],
+      dataAttributes: [],
+      props: {
+        zindex: p.zindex != null ? p.zindex : -1,
+        w: p.w, h: p.h, x: p.x, y: p.y, angle: 0,
+        height: p.height || [56]
+      },
+      path: lanePath(),
+      attribute: laneAttribute(o.attributeExtra),
+      resizeDir: '',
+      group: '',
+      locked: false,
+      category: o.category || 'lane',
+      theme: {}
+    };
+  }
+
+  function isLaneId(id) {
+    var e = global.Model.define.elements[id];
+    return !!(e && /horizontalLane/i.test(e.name || ''));
+  }
+
+  function normalizeRows(rows, defaultHeight, fnName) {
+    if (!Array.isArray(rows) || !rows.length) {
+      throw new Error(fnName + ': rows 必须是非空数组（长度 1..50）');
+    }
+    if (rows.length > 50) throw new Error(fnName + ': 行数上限 50，收到 ' + rows.length);
+    var MIN_ROW_H = 20, MAX_ROW_H = 10000;
+    return rows.map(function (r, i) {
+      var name = typeof r === 'string' ? r : (r && r.name) || '';
+      var h = (typeof r === 'object' && r != null) ? r.height : defaultHeight;
+      if (h == null) h = 200;
+      if (!isFinite(h) || h < MIN_ROW_H || h > MAX_ROW_H) {
+        throw new Error(fnName + ': 第 ' + (i + 1) + ' 行行高非法（需 ' +
+          MIN_ROW_H + '..' + MAX_ROW_H + '），收到 ' + h);
+      }
+      return { name: name, height: h };
+    });
+  }
+
+  /**
+   * 只读：列出一个池的行（按 y 升序）。不存在的池返回 null，非池抛错。
+   * 返回 {poolId, name, title, x,y,w,h, headerWidth,
+   *       childrenLength(原始 children 长度), rowCount(=live lane 数), rows:[...]}。
+   * 关键：rowCount === pool.children.length（原生池里 children 全是 lane）。
+   */
+  function getPoolRows(poolId) {
+    ensureRuntime();
+    var els = global.Model.define.elements;
+    var pool = els[poolId];
+    if (!pool) return null;
+    if (!/horizontalPool/i.test(pool.name || '')) {
+      throw new Error('getPoolRows: 不是泳道池: ' + poolId + ' (name=' + pool.name + ')');
+    }
+    var children = pool.children || [];
+    var rows = children.map(function (id) {
+      var e = els[id];
+      if (!e) return { id: id, missing: true };
+      var p = e.props || {}, t = (e.textBlock || [])[0];
+      return {
+        id: id, name: e.name || '', text: t ? t.text : '',
+        x: p.x, y: p.y, w: p.w, h: p.h,
+        height: p.height, parent: e.parent || '',
+        isLane: /horizontalLane/i.test(e.name || '')
+      };
+    }).filter(function (r) { return !r.missing; })
+      .sort(function (a, b) { return (a.y || 0) - (b.y || 0); });
+    var p = pool.props || {};
+    var t = (pool.textBlock || [])[0];
+    return {
+      poolId: poolId, name: pool.name, title: t ? t.text : '',
+      x: p.x, y: p.y, w: p.w, h: p.h, headerWidth: p.height,
+      childrenLength: children.length, rowCount: rows.length, rows: rows
+    };
+  }
+
+  /**
+   * 一等公民：创建「一个池 + N 行」的泳道池（1 个 horizontalPool + N 个 horizontalLane，单事务）。
+   *   opts.rows        : [{name,height}] 或 ['角色A','角色B']，长度 1..50（必填）
+   *   opts.title       : 池标题 -> pool.textBlock[0].text
+   *   opts.x,y,w       : 池坐标/宽度（默认 100,100,2000）；不夹取，便于追加到原图下方
+   *   opts.rowHeight   : rows 用字符串简写时的默认行高，默认 200
+   *   opts.headerWidth : 左侧表头列宽 = props.height[0]，默认 56
+   *   opts.id          : 池 id（默认 ai_pool_<时间戳>），lane id = <池id>_lane_<i>
+   *   opts.style       : {fill,fillLane,line,font,lineWidth,fontSize,bold}
+   *   opts.viewportRenderable : 默认 false（AI 元素，避免离屏被裁剪）；设 true 用原生行为
+   *   opts.clamp       : 默认 false；设 true 才调 clampIntoView（会改变 x/y，返回值带 clamped）
+   * 返回 {id, laneIds, rowCount, x,y,w,h, totalHeight, headerWidth, rendered, clamped}。
+   */
+  function createPool(opts) {
+    ensureRuntime();
+    var o = opts || {};
+    var norm = normalizeRows(o.rows, o.rowHeight, 'createPool');
+    var headerWidth = (o.headerWidth != null && isFinite(o.headerWidth) && o.headerWidth > 0)
+      ? o.headerWidth : 56;
+    var st = o.style || {};
+    var fill = st.fill != null ? st.fill : RED.fill;
+    var fillLane = st.fillLane != null ? st.fillLane : fill;
+    var line = st.line != null ? st.line : RED.line;
+    var font = st.font != null ? st.font : RED.font;
+    var lineWidth = st.lineWidth != null ? st.lineWidth : 2;
+    var fontSize = st.fontSize != null ? st.fontSize : 13;
+    var bold = st.bold === true;
+    var vr = o.viewportRenderable === true ? true : false;
+    var w = o.w || 2000;
+    var x = o.x != null ? o.x : 100;
+    var y = o.y != null ? o.y : 100;
+    var totalH = norm.reduce(function (a, r) { return a + r.height; }, 0);
+    var clamped = false;
+    if (o.clamp === true) {
+      var pos = clampIntoView(x, y, w, totalH);
+      x = pos.x; y = pos.y; clamped = pos.clamped;
+    }
+    var tag = o.id || ('ai_pool_' + Date.now());
+    var laneIds = norm.map(function (r, i) { return tag + '_lane_' + i; });
+    var laneW = Math.max(1, w - headerWidth);
+    var laneX = x + headerWidth;
+    var poolLine = { lineWidth: lineWidth, lineColor: line, lineStyle: 'solid' };
+    var poolFill = fill ? { drawType: 'fill', fill: fill, alpha: 1 } : {};
+    var laneFill = fillLane ? { drawType: 'fill', fill: fillLane, alpha: 1 } : {};
+    var fontStyle = { fontColor: font, fontSize: fontSize, bold: bold,
+      textAlign: 'center', vAlign: 'middle' };
+    var attrExtra = vr ? {} : { viewportRenderable: false };
+
+    var pool = {
+      id: tag,
+      name: 'horizontalPool',
+      title: '泳池(水平)',
+      parent: '',
+      container: '',
+      link: '',
+      children: laneIds.slice(),
+      shapeStyle: { alpha: 1 },
+      fillStyle: poolFill,
+      lineStyle: poolLine,
+      fontStyle: fontStyle,
+      textBlock: laneTextBlock(o.title || ''),
+      anchors: [],
+      dataAttributes: [],
+      props: { zindex: 1, w: w, h: totalH, x: x, y: y, angle: 0, height: [headerWidth] },
+      path: lanePath(),
+      attribute: laneAttribute(attrExtra),
+      resizeDir: ['t', 'r', 'b'],
+      group: '',
+      locked: false,
+      category: 'lane',
+      theme: {}
+    };
+
+    var laneEls = [];
+    var cursor = y;
+    for (var i = 0; i < norm.length; i++) {
+      laneEls.push(buildLane({
+        id: laneIds[i], parent: tag, text: norm[i].name,
+        fillStyle: laneFill, lineStyle: poolLine, fontStyle: fontStyle,
+        category: 'lane', attributeExtra: attrExtra,
+        props: {
+          zindex: -1, x: laneX, y: cursor, w: laneW, h: norm[i].height,
+          height: [headerWidth]
+        }
+      }));
+      cursor += norm[i].height;
+    }
+
+    global.MessageSource.executeMessages(
+      [{ action: 'create', content: [pool].concat(laneEls) }], true
+    );
+    return {
+      id: tag, laneIds: laneIds, rowCount: laneIds.length,
+      x: x, y: y, w: w, h: totalH, totalHeight: totalH,
+      headerWidth: headerWidth, clamped: clamped,
+      rendered: !!document.getElementById(tag)
+    };
+  }
+
+  /**
+   * 一等公民：把已存在的泳道池改成 N 行（增删 lane 子元素 + 重排坐标 + 同步池高）。
+   *   poolId : 已存在的 horizontalPool 的 id
+   *   rows   : [{name,height}] 或 ['角色A',...]，长度 1..50（必填）
+   *   opts   : {headerWidth, rowHeight, keepIds(默认 true), style, viewportRenderable}
+   * 行数只由 pool.children 决定：复用前 min(旧行数,新行数) 个 lane（update），
+   * 多出来的旧 lane 删除（remove），不足的新 lane 新建（create），单事务提交。
+   * 非 lane 的旧 children 原样保留，避免误删挂在池里的普通图元。
+   * 返回 {poolId,rowCount,laneIds,added,updated,removed,kept,totalHeight,headerWidth}。
+   */
+  function setPoolRows(poolId, rows, opts) {
+    ensureRuntime();
+    var o = opts || {};
+    var els = global.Model.define.elements;
+    var pool = els[poolId];
+    if (!pool) throw new Error('setPoolRows: 泳道池不存在: ' + poolId);
+    if (!/horizontalPool/i.test(pool.name || '')) {
+      throw new Error('setPoolRows: 目标不是 horizontalPool: ' + poolId + ' (name=' + pool.name + ')');
+    }
+    var norm = normalizeRows(rows, o.rowHeight, 'setPoolRows');
+    var keepIds = o.keepIds !== false;
+    var poolProps = pool.props || {};
+    var headerWidth = (o.headerWidth != null && isFinite(o.headerWidth) && o.headerWidth > 0)
+      ? o.headerWidth
+      : (Array.isArray(poolProps.height) && isFinite(poolProps.height[0]) && poolProps.height[0] > 0)
+        ? poolProps.height[0] : 56;
+    var st = o.style || {};
+    var fillLane = st.fillLane != null ? st.fillLane : (st.fill != null ? st.fill : RED.fill);
+    var line = st.line != null ? st.line : RED.line;
+    var font = st.font != null ? st.font : RED.font;
+    var lineWidth = st.lineWidth != null ? st.lineWidth : 2;
+    var fontSize = st.fontSize != null ? st.fontSize : 13;
+    var laneFill = fillLane ? { drawType: 'fill', fill: fillLane, alpha: 1 } : {};
+    var laneLine = { lineWidth: lineWidth, lineColor: line, lineStyle: 'solid' };
+    var fontStyle = { fontColor: font, fontSize: fontSize, bold: st.bold === true,
+      textAlign: 'center', vAlign: 'middle' };
+
+    var oldChildren = (pool.children || []).slice();
+    var oldLaneIds = oldChildren.filter(isLaneId);
+    var otherChildren = oldChildren.filter(function (id) { return !isLaneId(id); });
+    var poolX = poolProps.x || 0, poolY = poolProps.y || 0, poolW = poolProps.w || 2000;
+    var laneX = poolX + headerWidth, laneW = Math.max(1, poolW - headerWidth);
+    var totalH = norm.reduce(function (a, r) { return a + r.height; }, 0);
+
+    var nextPool = JSON.parse(JSON.stringify(pool));
+    nextPool.children = [];
+    nextPool.props.h = totalH;
+    if (!Array.isArray(nextPool.props.height) || !nextPool.props.height.length) {
+      nextPool.props.height = [headerWidth];
+    } else {
+      nextPool.props.height[0] = headerWidth;
+    }
+    nextPool.name = 'horizontalPool';
+    nextPool.category = 'lane';
+    nextPool.path = lanePath();
+    nextPool.attribute = laneAttribute({ viewportRenderable: nextPool.attribute && nextPool.attribute.viewportRenderable });
+    if (o.title != null && nextPool.textBlock && nextPool.textBlock[0]) {
+      nextPool.textBlock[0].text = o.title;
+    }
+
+    var laneIds = [], newLanes = [], reusedLanes = [];
+    var kept = 0, added = 0, cursor = poolY;
+    for (var i = 0; i < norm.length; i++) {
+      var reuse = keepIds && i < oldLaneIds.length ? els[oldLaneIds[i]] : null;
+      var id = reuse ? oldLaneIds[i] : (poolId + '_lane_' + Date.now() + '_' + i);
+      var lane;
+      if (reuse) {
+        kept++;
+        lane = JSON.parse(JSON.stringify(reuse));
+        lane.parent = poolId;
+        lane.name = 'horizontalLane';
+        lane.children = [];
+        lane.textBlock = laneTextBlock(norm[i].name);
+        lane.path = lanePath();
+        lane.attribute = laneAttribute({ viewportRenderable: lane.attribute && lane.attribute.viewportRenderable });
+        lane.category = 'lane';
+        if (!lane.props) lane.props = {};
+        lane.props.x = laneX; lane.props.y = cursor;
+        lane.props.w = laneW; lane.props.h = norm[i].height;
+        lane.props.height = [headerWidth];
+        if (o.style) { lane.fillStyle = laneFill; lane.lineStyle = laneLine; lane.fontStyle = fontStyle; }
+        reusedLanes.push(lane);
+      } else {
+        added++;
+        lane = buildLane({
+          id: id, parent: poolId, text: norm[i].name,
+          fillStyle: laneFill, lineStyle: laneLine, fontStyle: fontStyle,
+          category: 'lane',
+          attributeExtra: { viewportRenderable: false },
+          props: { zindex: -1, x: laneX, y: cursor, w: laneW, h: norm[i].height,
+            height: [headerWidth] }
+        });
+        newLanes.push(lane);
+      }
+      laneIds.push(id);
+      nextPool.children.push(id);
+      cursor += norm[i].height;
+    }
+    nextPool.children = nextPool.children.concat(otherChildren);
+
+    var removeIds = oldLaneIds.filter(function (id) { return laneIds.indexOf(id) < 0; });
+    var messages = [];
+    if (removeIds.length) {
+      var removedEls = removeIds.map(function (id) { return els[id]; }).filter(Boolean);
+      if (removedEls.length) messages.push({ action: 'remove', content: removedEls });
+    }
+    var updateEls = [nextPool].concat(reusedLanes);
+    messages.push({ action: 'update', content: { shapes: updateEls, updates: updateEls } });
+    if (newLanes.length) messages.push({ action: 'create', content: newLanes });
+    global.MessageSource.executeMessages(messages, true);
+
+    return {
+      poolId: poolId, rowCount: laneIds.length, laneIds: laneIds,
+      added: added, updated: reusedLanes.length, removed: removeIds.length, kept: kept,
+      totalHeight: totalH, headerWidth: headerWidth
+    };
+  }
+
   // ---------- 导出 ----------
   global.POBridge = {
     RED: RED,
@@ -321,7 +681,10 @@
     createEdge: createEdge,
     getViewBox: getViewBox,
     clampIntoView: clampIntoView,
-    focusRect: focusRect
+    focusRect: focusRect,
+    getPoolRows: getPoolRows,
+    createPool: createPool,
+    setPoolRows: setPoolRows
   };
 
   return global.POBridge;
