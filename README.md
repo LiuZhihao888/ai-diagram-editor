@@ -81,7 +81,8 @@ node bridge/build.mjs --check   # 校验产物是否与源码一致（漂移则�
 
 ```bash
 cd dsh/skill/dsh-processon-diagram-editor
-node test/selftest.mjs   # 36 项离线断言（页面片段/转义/守卫/自包含/书签版本）
+node test/selftest.mjs   # 46 项离线断言（页面片段/转义/守卫/自包含/书签版本/泳道池）
+node test/verify-pool.mjs # 33 项：泳道池行数能力离线验证
 node test/parity.mjs     # 两个产物行为是否一致（压缩后仍等价）
 
 cd wb

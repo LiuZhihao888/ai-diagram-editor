@@ -65,7 +65,7 @@ popd
 if not %SELFTEST%==0 (
     echo       [警告] 离线自检未通过（可能没装 Node.js，不影响使用）
 ) else (
-    echo       36 项离线断言通过
+    echo       46 项离线断言通过
 )
 
 echo.
