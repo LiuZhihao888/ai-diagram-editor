@@ -12,7 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -52,19 +52,29 @@ function wrap(src) {
 }
 
 async function minify(src) {
-  const esbuild = path.join(HERE, 'node_modules', 'esbuild');
-  const args = ['--minify', '--format=iife', '--target=es2020', '--log-level=warning'];
-  let out;
-  if (fs.existsSync(esbuild)) {
-    const bin = path.join(esbuild, 'bin', 'esbuild');
-    out = execFileSync(process.execPath, [bin, ...args], { input: src, encoding: 'utf8' });
-  } else {
+  const esbuildDir = path.join(HERE, 'node_modules', 'esbuild');
+  if (!fs.existsSync(esbuildDir)) {
     // 不联网、不隐式安装：缺依赖就明确报错，让调用方先 npm ci。
     console.error('✗ 缺本地 esbuild：请先在各包目录执行 npm ci / npm install 再构建。');
-    console.error('  期望路径：' + esbuild);
+    console.error('  期望路径：' + esbuildDir);
     process.exit(2);
   }
-  return out;
+  // 【必须走 JS API，不能 spawn bin/esbuild】
+  // 那个文件是**平台原生可执行文件**（Linux 是 ELF，Windows 是 .exe），
+  // 用 process.execPath 去执行它等于让 node 解析二进制，必然失败：
+  //   SyntaxError: Invalid or unexpected token  (ELF...)
+  // 之前只在 Windows 上构建过所以没暴露 —— Windows 上该路径是 .exe，
+  // 而 .exe 走 execFileSync(process.execPath, [bin]) 同样会挂，
+  // 只是代码里那行恰好没被执行过。改用官方 transform API 后跨平台都正确。
+  const { transform } = await import(pathToFileURL(path.join(esbuildDir, 'lib', 'main.js')).href);
+  const result = await transform(src, {
+    minify: true,
+    format: 'iife',
+    target: 'es2020',
+    logLevel: 'warning',
+    loader: 'js',
+  });
+  return result.code;
 }
 
 const rendered = new Map();
