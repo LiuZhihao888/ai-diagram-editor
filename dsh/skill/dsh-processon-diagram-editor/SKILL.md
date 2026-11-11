@@ -644,6 +644,74 @@ POBridge.detectCrossings('ai_').crossings   // 0  不能穿过节点
 
 ---
 
+## 五之四、切页与验收：两个会让结论失真的坑
+
+这两条是并行跑 10 页时踩出来的，**不避开就会得出假失败或假通过**。
+
+### 坑 1：切页后必须等加载稳定，不能立刻采样
+
+ProcessOn 的页面是**懒加载**的。刚点完页标签，`Model.define.elements` 会从上一页的
+残留逐步换成目标页 —— 中间有几百毫秒的**混合态**。
+
+实测事故 ：p6 在元素数还是 313 时采样得到 `tightGaps=0`（假通过），
+等加载完变成 370 个元素，复验发现真实 `tightGaps=4 / minGap=20`。
+
+**正确做法：连读两次元素数，一致了才动手/才验收。**
+
+```js
+async function waitStable() {
+  let prev = -1;
+  for (let i = 0; i < 10; i++) {
+    const n = Object.keys(Model.define.elements).length;
+    if (n === prev) return n;          // 连续两次一致 = 稳定
+    prev = n;
+    await sleep(700);
+  }
+  throw new Error('页面加载未稳定');
+}
+```
+
+切页本身也要 `mousedown + mouseup + click` 三连（真实点击），然后等约 2600ms 起步。
+
+### 坑 2：验收必须做「页内作用域」，不能用全局 /^ai_/
+
+`Model.define.elements` 只装当前页 —— 听起来全局过滤就够。但配合坑 1 的混合态，
+全局统计会**把上一页的元素算进这一页**。
+
+实测事故 ：p9 在过渡态报 `crossings=6`，稳定后实际是 **0**。
+另一次相反：p6 混合态报通过，实际没过。
+
+**正确做法：按 `_pN_` 子串做页内作用域。**
+
+```js
+// 错：跨页混合
+if (!/^ai_/.test(id)) continue;
+
+// 对：锁定第 N 页
+if (id.indexOf('ai_') !== 0) continue;
+if (id.indexOf('_p9_') < 0) continue;
+```
+
+技能里已经封装好，直接用：
+
+```js
+// 第二个参数是页索引，不传则全页统计（单页独占时才安全）
+auditLayoutExpr('ai_', 9)
+// -> { nodes, edges, lkSkipped, badAnchor, crossings, tightGaps, minGap, pass }
+```
+
+`lkSkipped` 是防漏算的：连线两端节点不在本页作用域时会被跳过，
+**如果 lkSkipped > 0，说明 badAnchor=0 可能是漏算出来的假象**，要查。
+
+### 并发抢同一标签页会互相破坏
+
+多个 agent 同时操作同一个 ProcessOn 标签页时，切页动作会互相打断对方。
+实测：两个 agent 都用 tab 794 时，页面选中项在无操作下自己从 6→5→3→2 跳变。
+
+**规则：一个标签页只给一个 agent。** 多 agent 并行时各占一个标签页。
+
+---
+
 ## 六、红色标记
 
 ```js

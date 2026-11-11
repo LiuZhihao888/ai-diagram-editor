@@ -383,6 +383,19 @@ for (const name of ['reflowSpacingExpr', 'polishLayoutExpr']) {
 
 // ---------------------------------------------------------------- [体检 auditLayoutExpr]
 ok('auditLayoutExpr 可编译', () => syntaxOk(P.auditLayoutExpr('ai_')));
+ok('auditLayoutExpr 传 pageIndex 时做页内作用域', () => {
+  const e = P.auditLayoutExpr('ai_', 9);
+  assert.match(e, /_p9_/, '应包含 _p9_ 子串');
+  syntaxOk(e);
+});
+ok('auditLayoutExpr 不传 pageIndex 时全页统计', () => {
+  const e = P.auditLayoutExpr('ai_');
+  assert.doesNotMatch(e, /_p\d+_/);
+  syntaxOk(e);
+});
+ok('auditLayoutExpr 报告 lkSkipped（防止漏算连线）', () => {
+  assert.match(P.auditLayoutExpr('ai_', 0), /lkSkipped/);
+});
 ok('auditLayoutExpr 带 NO_BRIDGE 守卫', () => {
   assert.match(P.auditLayoutExpr('ai_'), /NO_BRIDGE/);
 });

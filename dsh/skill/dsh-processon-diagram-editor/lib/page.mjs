@@ -349,15 +349,30 @@ export function polishLayoutExpr(prefix, opts) {
   ].join('\n');
 }
 
-/** 页面体检：间距/交叉/锚点三项一次算完（验收标准就在这里，别在别处重复实现）。 */
-export function auditLayoutExpr(prefix) {
+/** 页面体检：间距/交叉/锚点三项一次算完（验收标准就在这里，别在别处重复实现）。
+ *
+ *  【为什么必须传 pageIndex】ProcessOn 的 Model.define.elements 只装「当前页」，
+ *  但切页是懒加载的：刚点完标签页时，元素会从上一页的残留逐步换成目标页。
+ *  这个过渡窗口里做全局 /^ai_/ 统计会**混入上一页的元素**，得出假失败或假通过。
+ *  实测踩过：p9 在过渡态报 crossings=6，稳定后实际是 0。
+ *  传 pageIndex 后按 '_pN_' 子串做页内作用域，边界clear。
+ */
+export function auditLayoutExpr(prefix, pageIndex) {
+  var scope = (typeof pageIndex === 'number')
+    ? JSON.stringify('_p' + pageIndex + '_')
+    : 'null';
   return [
-    '(function(prefix){',
+    '(function(prefix, scopeSub){',
     "  if (typeof window.POBridge !== 'object') return JSON.stringify({error:'NO_BRIDGE'});",
     '  var E = window.Model.define.elements, nodes = {}, badAnchor = 0, cross = 0, tight = 0, minGap = 9999;',
     '  var id, i;',
+    '  function inScope(x) {',
+    '    if (prefix && x.indexOf(prefix) !== 0) return false;',
+    '    if (scopeSub && x.indexOf(scopeSub) < 0) return false;',
+    '    return true;',
+    '  }',
     '  for (id in E) {',
-    '    if (prefix && id.indexOf(prefix) !== 0) continue;',
+    '    if (!inScope(id)) continue;',
     '    var e = E[id];',
     '    if (!e || !e.props) continue;',
     '    if (/pool|lane|linker/i.test(e.name || "")) continue;',
@@ -385,13 +400,13 @@ export function auditLayoutExpr(prefix) {
     '    }',
     '    return false;',
     '  }',
-    '  var edgeCount = 0;',
+    '  var edgeCount = 0, skipped = 0;',
     '  for (id in E) {',
-    '    if (prefix && id.indexOf(prefix) !== 0) continue;',
-    '    if (!/_lk_/.test(id)) continue;',
+    '    if (!inScope(id)) continue;',
+    '    if (id.indexOf("_lk_") < 0) continue;',
     '    var g = E[id];',
-    '    if (!g || !g.from || !g.to) continue;',
-    '    if (!nodes[g.from.id] || !nodes[g.to.id]) continue;',
+    '    if (!g || !g.from || !g.to) { skipped++; continue; }',
+    '    if (!nodes[g.from.id] || !nodes[g.to.id]) { skipped++; continue; }',
     '    edgeCount++;',
     '    if (!onMid(g.from.x, g.from.y, nodes[g.from.id]) || !onMid(g.to.x, g.to.y, nodes[g.to.id])) badAnchor++;',
     '    var pts = [{ x: g.from.x, y: g.from.y }].concat(g.points || []).concat([{ x: g.to.x, y: g.to.y }]);',
@@ -412,9 +427,9 @@ export function auditLayoutExpr(prefix) {
     '      if (gp < 60) tight++;',
     '    }',
     '  }',
-    '  return JSON.stringify({ nodes: Object.keys(nodes).length, edges: edgeCount,',
+    '  return JSON.stringify({ nodes: Object.keys(nodes).length, edges: edgeCount, lkSkipped: skipped,',
     '    badAnchor: badAnchor, crossings: cross, tightGaps: tight, minGap: minGap,',
     '    pass: (badAnchor === 0 && cross === 0 && tight === 0 && minGap >= 60) });',
-    '})(' + JSON.stringify(prefix || '') + ')',
+    '})(' + JSON.stringify(prefix || '') + ', ' + scope + ')',
   ].join('\n');
 }
