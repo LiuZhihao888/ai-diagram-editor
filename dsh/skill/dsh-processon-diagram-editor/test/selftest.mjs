@@ -410,6 +410,27 @@ ok('auditLayoutExpr 的通过阈值是 minGap>=60', () => {
   assert.match(P.auditLayoutExpr('ai_'), /minGap >= 60/);
 });
 
+// ---------------------------------------------------------------- [侧栏说明卡]
+ok('桥接层导出 createSideCard / auditSideCard', () => {
+  const b = fs.readFileSync(path.join(REPO, 'bridge', 'pobridge.js'), 'utf8');
+  assert.ok(b.includes('createSideCard: createSideCard'), '缺 createSideCard');
+  assert.ok(b.includes('auditSideCard: auditSideCard'), '缺 auditSideCard');
+});
+ok('createSideCard 会报告夹取与修复状态', () => {
+  const b = fs.readFileSync(path.join(REPO, 'bridge', 'pobridge.js'), 'utf8');
+  assert.match(b, /clampedAtCreate/);
+  assert.match(b, /repairedByUpdate/);
+  assert.match(b, /alignedWithPool/);
+});
+ok('createSideCard 记录 -240 坐标下限', () => {
+  const b = fs.readFileSync(path.join(REPO, 'bridge', 'pobridge.js'), 'utf8');
+  assert.match(b, /x < -240/);
+});
+ok('auditSideCard 返回 pass 判定', () => {
+  const b = fs.readFileSync(path.join(REPO, 'bridge', 'pobridge.js'), 'utf8');
+  assert.match(b, /pass: overlaps\.length === 0/);
+});
+
 // ---------------------------------------------------------------- 汇总
 console.log('');
 if (fails.length) {

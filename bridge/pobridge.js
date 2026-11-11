@@ -634,6 +634,113 @@
     };
   }
 
+  // ---------- 侧栏说明卡（左侧瘦长矩形）----------
+  // 【用途】把「优化说明」这类长文本放在泳道图左侧，与泳道等高、不遮挡任何内容。
+  //
+  // 【坐标夹取铁律（实测）】
+  //   createNode 会被静默夹进视口：x 下限约 -241，y 必须落在当前视口内。
+  //   直接 createNode({x:-240, y:6604}) 在未滚动到该区域时会被夹成 y=-660。
+  //   正确顺序：① Designer.scrollShapesToView(目标区域) ② 等渲染 ③ 再 createNode。
+  //   若仍被夹住，用 updateNode 二次修正 y —— update 不走创建期的夹取逻辑。
+  //   返回值里的 clamped 字段必须检查，不能假设放对了。
+  function createSideCard(opts) {
+    ensureRuntime();
+    var o = opts || {};
+    var E = global.Model.define.elements;
+    var id = o.id || ('ai_card_' + Date.now());
+    var poolId = o.poolId;
+    var pool = poolId ? E[poolId] : null;
+    if (!pool) throw new Error('需要 poolId 指向泳道池，才能等高对齐: ' + poolId);
+
+    var pw = pool.props;
+    var cardW = typeof o.w === 'number' ? o.w : 280;
+    var gap = typeof o.gap === 'number' ? o.gap : 16;
+    // 卡片右沿贴住池左沿留 gap，左沿尽量靠左但不越 -240 下限
+    var right = pw.x - gap;
+    var x = right - cardW;
+    if (x < -240) x = -240;
+
+    // 先把该区域滚进视口，否则 y 会被夹
+    try {
+      var targets = [];
+      for (var k in E) {
+        if (k.indexOf(o.scope || 'ai_') === 0 && !/linker/i.test(E[k].name || '')) targets.push(E[k]);
+      }
+      if (targets.length) global.Designer.scrollShapesToView(targets);
+    } catch (e) { /* ignore */ }
+
+    // 先删同 id 旧卡，避免重复
+    if (E[id]) {
+      global.MessageSource.executeMessages([{ action: 'remove', content: [id] }], true);
+    }
+
+    var created = createNode({
+      id: id,
+      text: o.text || '',
+      x: Math.round(x),
+      y: Math.round(pw.y),
+      w: cardW,
+      h: Math.round(pw.h),
+      name: 'process',
+      fill: o.fill || '255,253,245',
+      line: o.line || '214,158,46',
+      font: o.font || '74,52,8'
+    });
+
+    // 顶部对齐（默认 h:'h' 是垂直居中，长文会显得上方空）
+    var el = global.Model.define.elements[id];
+    if (el) {
+      var nx = JSON.parse(JSON.stringify(el));
+      if (nx.textBlock && nx.textBlock[0]) {
+        nx.textBlock[0].position = { w: 'w-20', x: 10, h: 'h-20', y: 10 };
+      }
+      global.Model.updateMulti([nx]);
+    }
+    // 二次修正：update 不受创建期夹取影响
+    var after = global.Model.define.elements[id];
+    var fixed = false;
+    if (after && (Math.abs(after.props.y - pw.y) > 1 || Math.abs(after.props.x - Math.round(x)) > 1)) {
+      var nx2 = JSON.parse(JSON.stringify(after));
+      nx2.props.x = Math.round(x);
+      nx2.props.y = Math.round(pw.y);
+      nx2.props.h = Math.round(pw.h);
+      global.Model.updateMulti([nx2]);
+      fixed = true;
+    }
+    var fin = global.Model.define.elements[id];
+    return {
+      id: id,
+      clampedAtCreate: created.clamped,
+      repairedByUpdate: fixed,
+      x: fin ? Math.round(fin.props.x) : null,
+      y: fin ? Math.round(fin.props.y) : null,
+      w: fin ? Math.round(fin.props.w) : null,
+      h: fin ? Math.round(fin.props.h) : null,
+      alignedWithPool: fin ? (Math.abs(fin.props.y - pw.y) < 1 && Math.abs(fin.props.h - pw.h) < 1) : false,
+      gapToPool: fin ? Math.round(pw.x - (fin.props.x + fin.props.w)) : null
+    };
+  }
+
+  // 检查说明卡是否遮住了任何其他图元
+  function auditSideCard(cardId) {
+    ensureRuntime();
+    var E = global.Model.define.elements;
+    var card = E[cardId];
+    if (!card) return { error: 'NO_CARD', id: cardId };
+    var c = card.props, overlaps = [], id;
+    for (id in E) {
+      if (id === cardId) continue;
+      var e = E[id];
+      if (!e.props || /linker/i.test(e.name || '')) continue;
+      if (e.props.w == null || e.props.h == null) continue;
+      var q = e.props;
+      var ix = Math.min(c.x + c.w, q.x + q.w) - Math.max(c.x, q.x);
+      var iy = Math.min(c.y + c.h, q.y + q.h) - Math.max(c.y, q.y);
+      if (ix > 1 && iy > 1) overlaps.push({ id: id, ix: Math.round(ix), iy: Math.round(iy) });
+    }
+    return { id: cardId, overlaps: overlaps.length, list: overlaps, pass: overlaps.length === 0 };
+  }
+
   // 列出所有连线 id（可按前缀过滤），省得外部自己遍历
   function listEdges(prefix) {
     ensureRuntime();
@@ -1068,6 +1175,8 @@
     autoRouteAround: autoRouteAround,
     reflowSpacing: reflowSpacing,
     polishLayout: polishLayout,
+    createSideCard: createSideCard,
+    auditSideCard: auditSideCard,
     ANCHOR: ANCHOR,
     getViewBox: getViewBox,
     clampIntoView: clampIntoView,
