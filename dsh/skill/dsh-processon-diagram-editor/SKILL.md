@@ -448,6 +448,164 @@ var expr = getPoolRowsExpr('example_pool_0');
 
 ---
 
+## 五之二、连线：必须绑锚点，不能从中心点连
+
+这是**最容易画丑的地方**，也是踩坑最深的。先看结论，再看为什么。
+
+### 结论：连线 = 边中点之间连，angle 是「边」的编码
+
+ProcessOn 里 hover 节点时出现的**蓝色小圆点**是 anchor（锚点），在四条边的中点上。
+连线必须绑在锚点上；从节点中心点连，渲染出来就是**斜线**，非常丑。
+
+**angle 不是「出线方向」，而是「锚点所在边」的编码**（这条我一开始搞反了）：
+
+| 边 | angle | 数值 |
+|---|---|---|
+| 左 L | `0` | 0 |
+| 上 T | `Math.PI / 2` | 1.57 |
+| 右 R | `Math.PI` | 3.14 |
+| 下 B | `3 * Math.PI / 2` | 4.71 |
+
+> 铁证：线上原图 **75 条 linker** 反向统计，规律 100% 一致 ——
+> `R:3.14` x42 / `T:1.57` x24 / `B:4.71` x26 / `L:0` x32。
+> **把右写成 0 会画成斜线**，这是唯一但致命的坑。
+
+### 坐标必须落在边中点
+
+```js
+// 右边缘中点（不是中心点！）
+{ x: p.x + p.w,      y: p.y + p.h / 2, angle: Math.PI }
+// 上边缘中点
+{ x: p.x + p.w / 2,  y: p.y,           angle: Math.PI / 2 }
+// 下边缘中点
+{ x: p.x + p.w / 2,  y: p.y + p.h,     angle: 3 * Math.PI / 2 }
+// 左边缘中点
+{ x: p.x,            y: p.y + p.h / 2, angle: 0 }
+```
+
+### points 是「拐角表」，不是端点表
+
+```
+端点 from / to  ->  由 anchor 决定
+points          ->  中间的 90 度拐角
+```
+
+- 两端**同高**（水平直达）：`points = [{x: to.x, y: from.y}]` -> 1 个拐角
+- 两端**同列**（垂直直达）：`points = [{x: from.x, y: to.y}]` -> 1 个拐角
+- 需要**阶梯**绕行：2 个拐角，例如
+  `[{x: 中间x, y: from.y}, {x: 中间x, y: to.y}]`
+
+### 改完必须触发重算，否则画布不更新
+
+```js
+Model.updateMulti([edge]);
+Designer.events.push('resetBrokenLinker');   // <- 少了这句，线还是旧的
+```
+
+### 直接用一等公民 API，别手搓坐标
+
+```js
+// 建连线（自动选边 + 自动算拐角）
+var e = POBridge.createEdge({
+  id: 'ai_edge_1', from: 'ai_node_a', to: 'ai_node_b', text: '流转'
+});
+// -> { id, fromSide:'R', toSide:'L', points:1 }
+
+// 把已有连线纠正到正确锚点（修复历史数据）
+POBridge.rebindEdge('ai_edge_1');
+POBridge.rebindEdges(POBridge.listEdges('ai_'));   // 批量，快得多
+
+// 强制指定某对边
+POBridge.createEdge({ from:'a', to:'b', fromSide:'B', toSide:'T' });
+```
+
+### 回滚线 / 跨行线：走外圈通道
+
+目标在左侧且垂直跨度大（典型是「否/退回」回指起点）时，走内部**必然穿过节点**。
+这类线一律走泳道组**下方**的外圈通道：
+
+```js
+// 自动算通道 y（泳道底部与注释块之间的空隙）并改道
+POBridge.autoRouteAround(['ai_edge_back']);
+
+// 或手动指定通道
+POBridge.routeAround([{id:'ai_edge_back'}], { channelY: 5186 });
+```
+
+### 画完必须自查：有没有穿过节点
+
+```js
+var r = POBridge.detectCrossings('ai_');
+// { crossings: 0, list: [] }   <- 必须是 0
+```
+
+非 0 就把这些线丢给 `autoRouteAround`，再测一次。
+
+### 怎么判断线到底画对没有（别用边界框猜！）
+
+**错误方法**：看连线 DOM 的 `width/height`。那是「折线 + 标签」的**合并包围盒**，
+一条标准折线也会有 `112x98` 这种尺寸，看着像斜线其实是直角。
+
+**正确方法**：读 canvas 像素剖面。
+
+```js
+var cv = document.getElementById(edgeId).querySelector('canvas');
+var img = cv.getContext('2d').getImageData(0,0,cv.width,cv.height).data;
+// 扫每一行：如果某行有连续长条填充 => 存在水平段（折线特征）
+// 扫每一列：如果某列有连续长条填充 => 存在垂直段
+```
+
+看到「垂直段 + 水平段 + 垂直段」就是标准直角折线。
+
+---
+
+## 五之三、节点间距：决定连线标签会不会被吞掉
+
+### 症状：连线看起来「断了」「被挤了」
+
+真正的因果链是：
+
+```
+节点间距太小 -> 连线太短 -> 连线标签（38~47px 宽）盖住整条线 -> 看起来线没了
+```
+
+实测一组数据（第 0 页）：
+
+| 连线 | 线长 | 标签宽 | 结果 |
+|---|---|---|---|
+| 材料匹配 | 20px | 38px | 标签比线长，线被完全吞掉 |
+| 真实性核验 | 20px | 47px | 标签是线长 2.4 倍 |
+| 取样留痕 | 300px | 38px | 正常，线清晰 |
+
+### 结论：相邻节点「边到边」的间隙 >= 80px
+
+标签最宽约 47px，两侧各留 16px 呼吸，所以：
+
+```
+最小间隙 = 47 + 16 x 2 ≈ 80px
+```
+
+**注意是「边到边」的间隙，不是节点中心距。** 中心距 = 节点宽 + 间隙。
+
+### 标签位置改不动 —— 别浪费时间
+
+我试过全部这些字段，ProcessOn **全部忽略**，标签位置由内部算法锁定：
+
+`location` / `position` / `offsetX` / `offsetY` / `dx` / `dy` /
+`labelPosition` / `align` / `vAlign` / `labelOffset`
+
+所以「把标签移到线上方」这条路**走不通**，只能靠拉大间距解决。
+（`location` 字段能写进去、模型也保留，但渲染位置不变 —— 写进去不等于生效。）
+
+### 文字会不会挤出框？不会，别改节点宽度
+
+**实测**：17 个节点真实 DOM 渲染，**0 溢出**。文字会自动换行且高度自适应。
+
+反面教训：按「字数 x 字号」估算宽度来判断溢出是**错的**，会得出「15/36 溢出」的假结论，
+然后去加宽节点 —— 白改。**要测就读真实 DOM 的 `scrollHeight vs clientHeight`。**
+
+---
+
 ## 六、红色标记
 
 ```js

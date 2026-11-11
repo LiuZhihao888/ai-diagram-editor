@@ -219,6 +219,49 @@ ok('createPoolExpr 带重复 id 守卫', () => {
   assert.match(P.createPoolExpr({ id: 'ai_pool_x', rows: ['A'] }), /DUPLICATE_ID/);
 });
 
+
+// ---------------------------------------------------------------- [锚点绑定/连线重排]
+for (const name of ['rebindEdgeExpr', 'rebindEdgesExpr', 'listEdgesExpr', 'detectCrossingsExpr', 'resetBrokenLinkersExpr']) {
+  ok('连线片段可编译: ' + name, () => syntaxOk(P[name]('x')));
+}
+ok('rebindEdgesExpr 拒绝空数组', () => {
+  assert.match(P.rebindEdgesExpr([]), /EMPTY_IDS/);
+});
+ok('rebindEdgeExpr 带 NOT_FOUND 守卫', () => {
+  assert.match(P.rebindEdgeExpr('nope'), /NOT_FOUND/);
+});
+ok('所有连线片段都带 NO_BRIDGE 守卫', () => {
+  for (const name of ['rebindEdgeExpr', 'rebindEdgesExpr', 'listEdgesExpr', 'detectCrossingsExpr', 'resetBrokenLinkersExpr']) {
+    assert.match(P[name]('x'), /NO_BRIDGE/, name + ' 缺少 NO_BRIDGE');
+  }
+});
+ok('createEdgeExpr 会传出 fromSide/toSide', () => {
+  const e = P.createEdgeExpr({ id: 'a', from: 'n1', to: 'n2', text: 'x' });
+  assert.match(e, /fromSide/);
+  assert.match(e, /toSide/);
+});
+ok('桥接层导出锚点能力', () => {
+  const b = fs.readFileSync(path.join(REPO, 'bridge', 'pobridge.js'), 'utf8');
+  for (const k of ['rebindEdge', 'rebindEdges', 'computeEdgeGeometry', 'detectCrossings', 'resetBrokenLinkers', 'ANCHOR']) {
+    assert.ok(b.includes(k), 'bridge 缺导出: ' + k);
+  }
+});
+ok('书签产物含锚点能力', () => {
+  const dec = decodeURIComponent(
+    fs.readFileSync(path.join(SKILL, 'scripts', 'bookmarklet.txt'), 'utf8').replace(/^javascript:/, '')
+  );
+  for (const k of ['rebindEdges', 'detectCrossings', 'resetBrokenLinker']) {
+    assert.ok(dec.includes(k), '书签缺: ' + k);
+  }
+});
+ok('angle 常量方向正确（L=0 T=PI/2 R=PI B=3PI/2）', () => {
+  const b = fs.readFileSync(path.join(REPO, 'bridge', 'pobridge.js'), 'utf8');
+  assert.match(b, /L:\s*0/);
+  assert.match(b, /T:\s*Math\.PI\s*\/\s*2/);
+  assert.match(b, /R:\s*Math\.PI[,\s]/);
+  assert.match(b, /B:\s*3\s*\*\s*Math\.PI\s*\/\s*2/);
+});
+
 // ---------------------------------------------------------------- 汇总
 console.log('');
 if (fails.length) {

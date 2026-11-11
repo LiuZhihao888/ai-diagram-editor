@@ -283,6 +283,107 @@
   }
 
   // ---------- 连线 ----------
+  // 【锚点绑定铁律（75 条原图连线实测反推）】
+  //   连线必须绑定「边的中点」，不能从中心点乱连 —— 那就是 ProcessOn 交互里
+  //   hover 节点时出现的蓝色小圆点（anchor）。只有绑在边中点，渲染器才会画出
+  //   干净的正交直角折线；从中心点连会画成斜线。
+  //
+  //   angle 不是「出线方向」，而是「该锚点所在边」的编码：
+  //     L 左 -> 0          T 上 -> PI/2 (1.57)
+  //     R 右 -> PI (3.14)  B 下 -> 3PI/2 (4.71)
+  //   实测统计（原图 75 条 linker）：R:3.14 x42 / T:1.57 x24 / B:4.71 x26 / L:0 x32
+  //   反向推理（把 R 写成 0）会画出斜线 —— 这是最容易踩的坑。
+  //
+  //   points 是「拐角表」，不是端点表：points[0] 通常是拐角 {x: to.x, y: from.y}。
+  //   改完 points 必须触发 Designer.events.push('resetBrokenLinker')，
+  //   否则渲染器不重算折线路径，画布上不更新。
+  var ANCHOR = { L: 0, T: Math.PI / 2, R: Math.PI, B: 3 * Math.PI / 2 };
+
+  function anchorPoints(p) {
+    return {
+      L: { x: p.x, y: p.y + p.h / 2 },
+      T: { x: p.x + p.w / 2, y: p.y },
+      R: { x: p.x + p.w, y: p.y + p.h / 2 },
+      B: { x: p.x + p.w / 2, y: p.y + p.h }
+    };
+  }
+
+  // 按相对位置自动挑选一对最自然的出入边（优先直达，其次阶梯）
+  function pickSides(a, b) {
+    var acx = a.x + a.w / 2, acy = a.y + a.h / 2;
+    var bcx = b.x + b.w / 2, bcy = b.y + b.h / 2;
+    var dx = bcx - acx, dy = bcy - acy;
+
+    // 同一水平行（y 中心几乎相等）-> 水平直达
+    if (Math.abs(dy) <= 1.5) {
+      if (bcx >= acx) return { from: 'R', to: 'L' };
+      return { from: 'L', to: 'R' };
+    }
+    // 同一竖直列 -> 垂直直达
+    if (Math.abs(dx) <= 1.5) {
+      if (bcy >= acy) return { from: 'B', to: 'T' };
+      return { from: 'T', to: 'B' };
+    }
+    // 垂直位移占主导 -> 下/上出，上/下入
+    if (Math.abs(dy) >= Math.abs(dx) * 0.55) {
+      if (dy > 0) return { from: 'B', to: 'T' };
+      return { from: 'T', to: 'B' };
+    }
+    // 否则水平
+    return dx >= 0 ? { from: 'R', to: 'L' } : { from: 'L', to: 'R' };
+  }
+
+  // 根据两端锚点生成拐角表
+  function buildPoints(fs, ts) {
+    var fx = fs.pt.x, fy = fs.pt.y, tx = ts.pt.x, ty = ts.pt.y;
+    var hExit = (fs.side === 'L' || fs.side === 'R');
+    var hEntry = (ts.side === 'L' || ts.side === 'R');
+
+    if (hExit && hEntry) {
+      if (Math.abs(fy - ty) < 1) return [{ x: tx, y: fy }];
+      var mx = Math.round((fx + tx) / 2);
+      return [{ x: mx, y: fy }, { x: mx, y: ty }];
+    }
+    if (!hExit && !hEntry) {
+      if (Math.abs(fx - tx) < 1) return [{ x: fx, y: ty }];
+      var my = Math.round((fy + ty) / 2);
+      return [{ x: fx, y: my }, { x: tx, y: my }];
+    }
+    return hExit ? [{ x: tx, y: fy }] : [{ x: fx, y: ty }];
+  }
+
+  function r2(v) { return Math.round(v * 100) / 100; }
+
+  // 计算一条连线的完整几何（纯函数，可单测）
+  function computeEdgeGeometry(fromProps, toProps, opts) {
+    var o = opts || {};
+    var sides = (o.fromSide && o.toSide)
+      ? { from: o.fromSide, to: o.toSide }
+      : pickSides(fromProps, toProps);
+    var ap = anchorPoints(fromProps), bp = anchorPoints(toProps);
+    var fs = { side: sides.from, pt: ap[sides.from] };
+    var ts = { side: sides.to, pt: bp[sides.to] };
+    var pts = buildPoints(fs, ts);
+    return {
+      from: { x: r2(fs.pt.x), y: r2(fs.pt.y), angle: ANCHOR[fs.side] },
+      to: { x: r2(ts.pt.x), y: r2(ts.pt.y), angle: ANCHOR[ts.side] },
+      points: pts.map(function (p) { return { x: r2(p.x), y: r2(p.y) }; }),
+      fromSide: sides.from,
+      toSide: sides.to,
+      anchorAngle: { from: ANCHOR[sides.from], to: ANCHOR[sides.to] }
+    };
+  }
+
+  function resetBrokenLinkers() {
+    try {
+      if (global.Designer && global.Designer.events && global.Designer.events.push) {
+        global.Designer.events.push('resetBrokenLinker');
+        return true;
+      }
+    } catch (e) { /* ignore */ }
+    return false;
+  }
+
   function createEdge(opts) {
     ensureRuntime();
     var o = opts || {};
@@ -290,28 +391,192 @@
     var to = global.Model.define.elements[o.to];
     if (!from || !to) throw new Error('连线端点不存在: ' + o.from + ' -> ' + o.to);
 
-    var fx = from.props.x + from.props.w / 2, fy = from.props.y + from.props.h / 2;
-    var tx = to.props.x + to.props.w / 2, ty = to.props.y + to.props.h / 2;
+    var geo = computeEdgeGeometry(from.props, to.props, o);
 
     var edge = {
       id: o.id || ('ai_edge_' + Date.now()),
       name: 'linker',
       text: o.text || '',
-      points: [{ x: fx, y: fy }, { x: tx, y: ty }],
+      points: geo.points,
       dataAttributes: [],
       props: { zindex: 950, x: 0, y: 0 },
       linkerType: 'broken',
       lineStyle: { lineWidth: o.lineWidth || 2, lineColor: o.line || RED.line },
-      from: { x: fx, y: fy, angle: 0, id: o.from },
-      to: { x: tx, y: ty, angle: 0, id: o.to },
-      textBlock: o.text
-        ? [{ position: { w: 'w', x: 0, h: 'h', y: 0 }, text: o.text }]
-        : [],
+      from: { x: geo.from.x, y: geo.from.y, angle: geo.from.angle, id: o.from },
+      to: { x: geo.to.x, y: geo.to.y, angle: geo.to.angle, id: o.to },
+      textBlock: o.text ? [{ location: 0.5, text: o.text }] : [],
       group: '',
       locked: false
     };
     global.MessageSource.executeMessages([{ action: 'create', content: [edge] }], true);
-    return { id: edge.id };
+    resetBrokenLinkers();
+    return { id: edge.id, fromSide: geo.fromSide, toSide: geo.toSide, points: geo.points.length };
+  }
+
+  function applyGeo(e, geo) {
+    var next = JSON.parse(JSON.stringify(e));
+    next.from = { x: geo.from.x, y: geo.from.y, angle: geo.from.angle, id: e.from.id };
+    next.to = { x: geo.to.x, y: geo.to.y, angle: geo.to.angle, id: e.to.id };
+    next.points = geo.points;
+    if (next.text && (!next.textBlock || !next.textBlock.length)) {
+      next.textBlock = [{ location: 0.5, text: next.text }];
+    }
+    return next;
+  }
+
+  // 重排单条连线：把端点从「中心点/错角度」纠正到「边中点 + 正确 angle」
+  function rebindEdge(id, opts) {
+    ensureRuntime();
+    var e = global.Model.define.elements[id];
+    if (!e) throw new Error('连线不存在: ' + id);
+    if (!e.from || !e.to) throw new Error('连线缺少端点: ' + id);
+    var f = global.Model.define.elements[e.from.id];
+    var t = global.Model.define.elements[e.to.id];
+    if (!f || !t) throw new Error('连线端点节点不存在: ' + id);
+    var geo = computeEdgeGeometry(f.props, t.props, opts || {});
+    global.Model.updateMulti([applyGeo(e, geo)]);
+    resetBrokenLinkers();
+    return { id: id, fromSide: geo.fromSide, toSide: geo.toSide, points: geo.points.length };
+  }
+
+  // 批量重排（一次 updateMulti + 一次 resetBrokenLinker）
+  function rebindEdges(ids, opts) {
+    ensureRuntime();
+    var list = ids || [];
+    var upd = [], log = [];
+    for (var i = 0; i < list.length; i++) {
+      var id = list[i];
+      var e = global.Model.define.elements[id];
+      if (!e || !e.from || !e.to) continue;
+      var f = global.Model.define.elements[e.from.id];
+      var t = global.Model.define.elements[e.to.id];
+      if (!f || !t) continue;
+      var geo = computeEdgeGeometry(f.props, t.props, opts || {});
+      upd.push(applyGeo(e, geo));
+      log.push({ id: id, fromSide: geo.fromSide, toSide: geo.toSide, points: geo.points.length });
+    }
+    if (upd.length) global.Model.updateMulti(upd);
+    resetBrokenLinkers();
+    return { rebound: upd.length, edges: log };
+  }
+
+  // 跨越多行的「回滚线」交给外圈通道：从泳道组下方绕行，绝不穿过任何节点。
+  // 判据：目标在左侧（回指），且垂直跨度大于一行 —— 这种线走内部必然穿过节点。
+  function routeAround(routes, opts) {
+    ensureRuntime();
+    var o = opts || {};
+    var channelY = o.channelY;
+    if (typeof channelY !== 'number') throw new Error('routeAround 需要 channelY（外圈通道 y 坐标）');
+    var E = global.Model.define.elements;
+    var log = [], upd = [];
+    for (var i = 0; i < routes.length; i++) {
+      var r = routes[i];
+      var e = E[r.id];
+      if (!e || !e.from || !e.to) continue;
+      var f = E[e.from.id], t = E[e.to.id];
+      if (!f || !t) continue;
+      var next = JSON.parse(JSON.stringify(e));
+      var fx = f.props.x + f.props.w / 2, fy = f.props.y + f.props.h;   // 下边中点
+      var tx = t.props.x + t.props.w / 2, ty = t.props.y + t.props.h;   // 下边中点
+      next.from = { x: r2(fx), y: r2(fy), angle: ANCHOR.B, id: e.from.id };
+      next.to = { x: r2(tx), y: r2(ty), angle: ANCHOR.B, id: e.to.id };
+      next.points = [{ x: r2(fx), y: r2(channelY) }, { x: r2(tx), y: r2(channelY) }];
+      upd.push(next);
+      log.push({ id: r.id, channelY: channelY, points: next.points.length });
+    }
+    if (upd.length) global.Model.updateMulti(upd);
+    resetBrokenLinkers();
+    return { routed: upd.length, edges: log };
+  }
+
+  // 自动挑一条不穿过任何节点的外圈通道，并把指定连线改走它
+  function autoRouteAround(ids, opts) {
+    ensureRuntime();
+    var o = opts || {};
+    var E = global.Model.define.elements;
+    // 收集泳道与注释，算出泳道组底部与注释顶部之间的空隙
+    var lanes = [], noteTop = null, id;
+    for (id in E) {
+      var el = E[id];
+      if (!el || !el.props) continue;
+      if (/lane/i.test(el.name || '') && id.indexOf('ai_') === 0) {
+        lanes.push({ y: el.props.y, h: el.props.h });
+      }
+      if (/_note_/.test(id) && noteTop === null) noteTop = el.props.y;
+    }
+    if (!lanes.length) throw new Error('找不到泳道，无法确定外圈通道');
+    lanes.sort(function (a, b) { return a.y - b.y; });
+    var laneBottom = lanes[lanes.length - 1].y + lanes[lanes.length - 1].h;
+    var channelY;
+    if (noteTop !== null && noteTop - laneBottom > 8) {
+      channelY = Math.round((laneBottom + noteTop) / 2);
+    } else {
+      channelY = Math.round(laneBottom + 24);
+    }
+    var routes = ids.map(function (x) { return { id: x }; });
+    var res = routeAround(routes, { channelY: channelY });
+    res.laneBottom = laneBottom;
+    res.noteTop = noteTop;
+    return res;
+  }
+
+  // 列出所有连线 id（可按前缀过滤），省得外部自己遍历
+  function listEdges(prefix) {
+    ensureRuntime();
+    var E = global.Model.define.elements, out = [];
+    for (var id in E) {
+      if (prefix && id.indexOf(prefix) !== 0) continue;
+      if (/linker/i.test((E[id] && E[id].name) || '')) out.push(id);
+    }
+    return out;
+  }
+
+  // 检测连线是否穿过非端点节点（交叉 = 视觉硬伤）
+  function detectCrossings(prefix) {
+    ensureRuntime();
+    var E = global.Model.define.elements, boxes = [], id;
+    for (id in E) {
+      if (prefix && id.indexOf(prefix) !== 0) continue;
+      var el = E[id];
+      if (!el || !el.props) continue;
+      if (/pool|lane|linker/i.test(el.name || '')) continue;
+      boxes.push({ id: id, x: el.props.x, y: el.props.y, w: el.props.w, h: el.props.h,
+        text: String((el.textBlock && el.textBlock[0] && el.textBlock[0].text) || '').slice(0, 16) });
+    }
+    function segHitsRect(x1, y1, x2, y2, r) {
+      var pad = 2, rx1 = r.x + pad, ry1 = r.y + pad, rx2 = r.x + r.w - pad, ry2 = r.y + r.h - pad;
+      if (Math.abs(y1 - y2) < 0.5) {
+        if (y1 < ry1 || y1 > ry2) return false;
+        var a = Math.min(x1, x2), b = Math.max(x1, x2);
+        return b > rx1 && a < rx2;
+      }
+      if (Math.abs(x1 - x2) < 0.5) {
+        if (x1 < rx1 || x1 > rx2) return false;
+        var c = Math.min(y1, y2), d = Math.max(y1, y2);
+        return d > ry1 && c < ry2;
+      }
+      return false;
+    }
+    var viol = [];
+    for (id in E) {
+      if (prefix && id.indexOf(prefix) !== 0) continue;
+      var e = E[id];
+      if (!e || !/linker/i.test(e.name || '')) continue;
+      if (!e.from || !e.to) continue;
+      var pts = [{ x: e.from.x, y: e.from.y }]
+        .concat(e.points || [])
+        .concat([{ x: e.to.x, y: e.to.y }]);
+      for (var i = 1; i < pts.length; i++) {
+        for (var b2 = 0; b2 < boxes.length; b2++) {
+          var bx = boxes[b2];
+          if (bx.id === e.from.id || bx.id === e.to.id) continue;
+          if (segHitsRect(pts[i - 1].x, pts[i - 1].y, pts[i].x, pts[i].y, bx)) {
+            viol.push({ edge: id, hitNode: bx.id, hitText: bx.text });
+          }
+        }
+      }
+    }
+    return { crossings: viol.length, list: viol };
   }
 
   // ---------- 泳道池 / 行数控制 ----------
@@ -679,6 +944,15 @@
     updateNode: updateNode,
     removeNodes: removeNodes,
     createEdge: createEdge,
+    rebindEdge: rebindEdge,
+    rebindEdges: rebindEdges,
+    computeEdgeGeometry: computeEdgeGeometry,
+    listEdges: listEdges,
+    resetBrokenLinkers: resetBrokenLinkers,
+    detectCrossings: detectCrossings,
+    routeAround: routeAround,
+    autoRouteAround: autoRouteAround,
+    ANCHOR: ANCHOR,
     getViewBox: getViewBox,
     clampIntoView: clampIntoView,
     focusRect: focusRect,

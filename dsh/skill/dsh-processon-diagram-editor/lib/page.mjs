@@ -88,8 +88,10 @@ export function createEdgeExpr(o) {
   return [
     '(function(o){',
     "  if (typeof window.POBridge !== 'object') return JSON.stringify({error:'NO_BRIDGE'});",
-    '  var e = POBridge.createEdge({id: o.id, from: o.from, to: o.to, text: o.text});',
-    '  return JSON.stringify({id: e.id, exists: !!window.Model.define.elements[e.id]});',
+    '  var e = POBridge.createEdge({id: o.id, from: o.from, to: o.to, text: o.text,',
+    '    fromSide: o.fromSide, toSide: o.toSide});',
+    '  return JSON.stringify({id: e.id, exists: !!window.Model.define.elements[e.id],',
+    '    fromSide: e.fromSide, toSide: e.toSide, points: e.points});',
     '})(' + JSON.stringify(o) + ')',
   ].join('\n');
 }
@@ -269,3 +271,60 @@ export const TAB_IDENT = [
   '  return JSON.stringify(out);',
   '})()',
 ].join('\n');
+
+/** 重排单条连线：端点纠正到边中点 + 正确 angle（锚点绑定）。 */
+export function rebindEdgeExpr(id) {
+  return [
+    '(function(id){',
+    "  if (typeof window.POBridge !== 'object') return JSON.stringify({error:'NO_BRIDGE'});",
+    "  if (!window.Model.define.elements[id]) return JSON.stringify({error:'NOT_FOUND', id: id});",
+    '  var r = POBridge.rebindEdge(id);',
+    '  return JSON.stringify(r);',
+    '})(' + JSON.stringify(id) + ')',
+  ].join('\n');
+}
+
+/** 批量重排一组连线（一次 updateMulti + 一次 resetBrokenLinker）。 */
+export function rebindEdgesExpr(ids) {
+  return [
+    '(function(ids){',
+    "  if (typeof window.POBridge !== 'object') return JSON.stringify({error:'NO_BRIDGE'});",
+    "  if (!ids || !ids.length) return JSON.stringify({error:'EMPTY_IDS'});",
+    '  var r = POBridge.rebindEdges(ids);',
+    '  return JSON.stringify(r);',
+    '})(' + JSON.stringify(ids) + ')',
+  ].join('\n');
+}
+
+/** 列出连线 id（可按前缀过滤）。 */
+export function listEdgesExpr(prefix) {
+  return [
+    '(function(prefix){',
+    "  if (typeof window.POBridge !== 'object') return JSON.stringify({error:'NO_BRIDGE'});",
+    '  var ids = POBridge.listEdges(prefix);',
+    '  return JSON.stringify({count: ids.length, ids: ids});',
+    '})(' + JSON.stringify(prefix || '') + ')',
+  ].join('\n');
+}
+
+/** 检测连线是否穿过非端点节点（交叉 = 视觉硬伤）。 */
+export function detectCrossingsExpr(prefix) {
+  return [
+    '(function(prefix){',
+    "  if (typeof window.POBridge !== 'object') return JSON.stringify({error:'NO_BRIDGE'});",
+    '  var r = POBridge.detectCrossings(prefix);',
+    '  return JSON.stringify(r);',
+    '})(' + JSON.stringify(prefix || '') + ')',
+  ].join('\n');
+}
+
+/** 让渲染器重算折线路径（改完 endpoints/points 后必须调用）。 */
+export function resetBrokenLinkersExpr() {
+  return [
+    '(function(){',
+    "  if (typeof window.POBridge !== 'object') return JSON.stringify({error:'NO_BRIDGE'});",
+    '  var ok = POBridge.resetBrokenLinkers();',
+    '  return JSON.stringify({reset: ok});',
+    '})()',
+  ].join('\n');
+}
