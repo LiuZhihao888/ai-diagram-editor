@@ -262,6 +262,125 @@ ok('angle 常量方向正确（L=0 T=PI/2 R=PI B=3PI/2）', () => {
   assert.match(b, /B:\s*3\s*\*\s*Math\.PI\s*\/\s*2/);
 });
 
+
+// ---------------------------------------------------------------- [间距重排 reflowSpacing]
+// 纯算法测试：把 bridge 里的 reflowSpacing 逻辑等价复刻，验证位移计算正确。
+// 这样间距算法的正确性不依赖浏览器。
+function planShifts(nodes, gap) {
+  const rows = {};
+  for (const n of nodes) {
+    const k = Math.round(n.y);
+    (rows[k] = rows[k] || []).push(n);
+  }
+  const shifts = {};
+  let maxRight = -Infinity;
+  for (const k of Object.keys(rows)) {
+    const arr = rows[k].slice().sort((a, b) => a.x - b.x);
+    let cum = 0;
+    for (let j = 0; j < arr.length; j++) {
+      if (j > 0) {
+        const prevNewX = arr[j - 1].x + (shifts[arr[j - 1].id] || 0);
+        const curNewX = arr[j].x + cum;
+        const realGap = curNewX - (prevNewX + arr[j - 1].w);
+        if (realGap < gap) cum += (gap - realGap);
+      }
+      shifts[arr[j].id] = cum;
+      const r = arr[j].x + cum + arr[j].w;
+      if (r > maxRight) maxRight = r;
+    }
+  }
+  return { shifts, maxRight };
+}
+
+ok('reflowSpacing: 间隙不足时按差值补齐', () => {
+  const nodes = [
+    { id: 'a', x: 0,   y: 0, w: 100, h: 50 },
+    { id: 'b', x: 120, y: 0, w: 100, h: 50 },   // gap = 20
+  ];
+  const { shifts } = planShifts(nodes, 80);
+  assert.equal(shifts.a, 0, '第一个不动');
+  assert.equal(shifts.b, 60, '第二个补 80-20=60');
+});
+
+ok('reflowSpacing: 间隙已足够时不动', () => {
+  const nodes = [
+    { id: 'a', x: 0,   y: 0, w: 100, h: 50 },
+    { id: 'b', x: 200, y: 0, w: 100, h: 50 },   // gap = 100 >= 80
+  ];
+  const { shifts } = planShifts(nodes, 80);
+  assert.equal(shifts.a, 0);
+  assert.equal(shifts.b, 0);
+});
+
+ok('reflowSpacing: 位移逐级累加（三个节点）', () => {
+  const nodes = [
+    { id: 'a', x: 0,   y: 0, w: 100, h: 50 },
+    { id: 'b', x: 120, y: 0, w: 100, h: 50 },   // gap 20 -> 补 60
+    { id: 'c', x: 240, y: 0, w: 100, h: 50 },   // gap 20 -> 补 60，累计 120
+  ];
+  const { shifts } = planShifts(nodes, 80);
+  assert.equal(shifts.a, 0);
+  assert.equal(shifts.b, 60);
+  assert.equal(shifts.c, 120, 'c 要跟着 b 一起移，再补自己的差值');
+});
+
+ok('reflowSpacing: 不同行互不影响', () => {
+  const nodes = [
+    { id: 'a', x: 0,   y: 0,   w: 100, h: 50 },
+    { id: 'b', x: 120, y: 0,   w: 100, h: 50 },
+    { id: 'c', x: 0,   y: 100, w: 100, h: 50 },
+    { id: 'd', x: 120, y: 100, w: 100, h: 50 },
+  ];
+  const { shifts } = planShifts(nodes, 80);
+  assert.equal(shifts.a, 0);
+  assert.equal(shifts.b, 60);
+  assert.equal(shifts.c, 0, '第二行第一个不动');
+  assert.equal(shifts.d, 60, '第二行独立计算');
+});
+
+ok('reflowSpacing: 只增不减，绝不往左拉', () => {
+  const nodes = [
+    { id: 'a', x: 500, y: 0, w: 100, h: 50 },
+    { id: 'b', x: 520, y: 0, w: 100, h: 50 },
+  ];
+  const { shifts } = planShifts(nodes, 80);
+  for (const k of Object.keys(shifts)) {
+    assert.ok(shifts[k] >= 0, k + ' 位移不能为负');
+  }
+});
+
+ok('reflowSpacing: 80 超宽时降级到 60', () => {
+  const nodes = [
+    { id: 'a', x: 0,   y: 0, w: 100, h: 50 },
+    { id: 'b', x: 120, y: 0, w: 100, h: 50 },
+  ];
+  const p80 = planShifts(nodes, 80);
+  const p60 = planShifts(nodes, 60);
+  assert.ok(p60.maxRight < p80.maxRight, '60px 方案的右沿必须更小');
+  assert.equal(p80.maxRight - p60.maxRight, 20, '差值应为 20');
+});
+
+ok('reflowSpacing: 单节点行不产生位移', () => {
+  const nodes = [{ id: 'solo', x: 999, y: 0, w: 100, h: 50 }];
+  const { shifts } = planShifts(nodes, 80);
+  assert.equal(shifts.solo, 0);
+});
+
+ok('桥接层导出 reflowSpacing / polishLayout', () => {
+  const b = fs.readFileSync(path.join(REPO, 'bridge', 'pobridge.js'), 'utf8');
+  assert.ok(b.includes('reflowSpacing: reflowSpacing'), '缺 reflowSpacing 导出');
+  assert.ok(b.includes('polishLayout: polishLayout'), '缺 polishLayout 导出');
+  assert.ok(b.includes('fallback'), '超宽降级参数缺失');
+});
+
+// ---------------------------------------------------------------- [polish 入口]
+for (const name of ['reflowSpacingExpr', 'polishLayoutExpr']) {
+  ok('polish 片段可编译: ' + name, () => syntaxOk(P[name]('ai_', {})));
+  ok('polish 片段带 NO_BRIDGE: ' + name, () => {
+    assert.match(P[name]('ai_', {}), /NO_BRIDGE/);
+  });
+}
+
 // ---------------------------------------------------------------- 汇总
 console.log('');
 if (fails.length) {

@@ -597,6 +597,44 @@ var img = cv.getContext('2d').getImageData(0,0,cv.width,cv.height).data;
 所以「把标签移到线上方」这条路**走不通**，只能靠拉大间距解决。
 （`location` 字段能写进去、模型也保留，但渲染位置不变 —— 写进去不等于生效。）
 
+### 一条龙：polishLayout（首选入口）
+
+上面两节的逻辑已经固化成 API。**给外部/子代理用这个，不要手搓坐标**：
+
+```js
+// 间距 + 连线 + 交叉，一次做完
+POBridge.polishLayout('ai_', { target: 80, fallback: 60, maxRight: 2624 })
+// -> {
+//      spacing: { moved, gap, degraded, maxRight, limit, ... },
+//      edgesRebound: 16,
+//      crossingsBefore: 2, rerouted: 1,
+//      crossingsAfter: 0
+//    }
+```
+
+`maxRight` 传泳道池的右沿（`pool.x + pool.w`）。算法先试 80px，
+撑完超出 `maxRight` 就**自动降级到 60px**。也可以传 `dryRun: true` 先预览。
+
+**验收三件套（必须全是 0）**：
+
+```js
+POBridge.detectCrossings('ai_').crossings   // 0  不能穿过节点
+// 锚点必须落在边中点（见下一节的自查代码）
+// 最小间隙 >= 60
+```
+
+### 间距算法细节（改代码的人看）
+
+```
+1. 节点按 y 分组（同一行）
+2. 行内按 x 排序，从左到右累计位移 —— 前一个动完，后一个才动
+3. 只增加不减少，绝不往左拉（避免压到上一行的连线）
+4. 完全不改 y —— 泳道归属不变
+```
+
+离线纯算法测试在 `test/selftest.mjs`（8 项），覆盖：补齐差值、已够不动、
+逐级累加、跨行独立、只增不减、降级、单节点行。
+
 ### 文字会不会挤出框？不会，别改节点宽度
 
 **实测**：17 个节点真实 DOM 渲染，**0 溢出**。文字会自动换行且高度自适应。

@@ -328,3 +328,23 @@ export function resetBrokenLinkersExpr() {
     '})()',
   ].join('\n');
 }
+
+/** 间距重排：按行把「边到边」间隙撑到 target（默认 80，超宽降级 60）。 */
+export function reflowSpacingExpr(prefix, opts) {
+  return [
+    '(function(prefix, o){',
+    "  if (typeof window.POBridge !== 'object') return JSON.stringify({error:'NO_BRIDGE'});",
+    '  return JSON.stringify(POBridge.reflowSpacing(prefix, o));',
+    '})(' + JSON.stringify(prefix || '') + ', ' + JSON.stringify(opts || {}) + ')',
+  ].join('\n');
+}
+
+/** 一条龙：间距重排 + 连线重连 + 交叉改道（子代理首选入口）。 */
+export function polishLayoutExpr(prefix, opts) {
+  return [
+    '(function(prefix, o){',
+    "  if (typeof window.POBridge !== 'object') return JSON.stringify({error:'NO_BRIDGE'});",
+    '  return JSON.stringify(POBridge.polishLayout(prefix, o));',
+    '})(' + JSON.stringify(prefix || '') + ', ' + JSON.stringify(opts || {}) + ')',
+  ].join('\n');
+}

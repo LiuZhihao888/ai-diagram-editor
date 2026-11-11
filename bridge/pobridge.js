@@ -519,6 +519,121 @@
     return res;
   }
 
+  // ---------- 间距重排（reflowSpacing）----------
+  // 【为什么需要它】相邻节点「边到边」间隙太小时，连线标签（38~47px 宽）会盖住
+  // 整条线，视觉上线就「断了/被挤了」。实测：间隙 20px 时标签比线还长。
+  // 结论：间隙 >= 80px（47 标签 + 两侧各 16 呼吸）。超宽时降级到 60px。
+  //
+  // 算法（按行处理，不动纵向）：
+  //   1. 节点按 y 分组（同一行）；
+  //   2. 行内按 x 排序，从左到右累计位移，保证前一个动完后一个才动；
+  //   3. 只增加不减少，绝不把节点往左拉；
+  //   4. 不改 y —— 泳道归属完全不变。
+  function reflowSpacing(prefix, opts) {
+    ensureRuntime();
+    var o = opts || {};
+    var target = typeof o.target === 'number' ? o.target : 80;
+    var fallback = typeof o.fallback === 'number' ? o.fallback : 60;
+    var maxRight = typeof o.maxRight === 'number' ? o.maxRight : null;
+    var dryRun = !!o.dryRun;
+    var E = global.Model.define.elements;
+
+    function collect() {
+      var nodes = [], id;
+      for (id in E) {
+        if (prefix && id.indexOf(prefix) !== 0) continue;
+        var el = E[id];
+        if (!el || !el.props) continue;
+        if (/pool|lane|linker/i.test(el.name || '')) continue;
+        if (/_hdr_|_note_/.test(id)) continue;
+        nodes.push({ id: id, x: el.props.x, y: el.props.y, w: el.props.w, h: el.props.h });
+      }
+      return nodes;
+    }
+
+    function plan(nodes, gap) {
+      var rows = {}, i;
+      for (i = 0; i < nodes.length; i++) {
+        var key = Math.round(nodes[i].y);
+        (rows[key] = rows[key] || []).push(nodes[i]);
+      }
+      var shifts = {}, maxR = -Infinity;
+      for (var k in rows) {
+        var arr = rows[k].slice().sort(function (a, b) { return a.x - b.x; });
+        var cum = 0;
+        for (var j = 0; j < arr.length; j++) {
+          if (j > 0) {
+            var prevNewX = arr[j - 1].x + (shifts[arr[j - 1].id] || 0);
+            var curNewX = arr[j].x + cum;
+            var realGap = curNewX - (prevNewX + arr[j - 1].w);
+            if (realGap < gap) cum += (gap - realGap);
+          }
+          shifts[arr[j].id] = cum;
+          var r = arr[j].x + cum + arr[j].w;
+          if (r > maxR) maxR = r;
+        }
+      }
+      return { shifts: shifts, maxRight: maxR };
+    }
+
+    var first = collect();
+    if (!first.length) return { moved: 0, gap: target, nodes: 0, reason: 'NO_NODES' };
+
+    var p1 = plan(first, target);
+    var usedGap = target;
+    var degraded = false;
+    if (maxRight !== null && p1.maxRight > maxRight && fallback < target) {
+      p1 = plan(first, fallback);
+      usedGap = fallback;
+      degraded = true;
+    }
+
+    var movedIds = [], upd = [];
+    for (var id2 in p1.shifts) {
+      if (!p1.shifts[id2]) continue;
+      movedIds.push(id2);
+      if (dryRun) continue;
+      var el2 = E[id2];
+      var c = JSON.parse(JSON.stringify(el2));
+      c.props.x = Math.round(c.props.x + p1.shifts[id2]);
+      upd.push(c);
+    }
+    if (!dryRun && upd.length) global.Model.updateMulti(upd);
+
+    return {
+      moved: movedIds.length, gap: usedGap, requested: target,
+      degraded: degraded, maxRight: Math.round(p1.maxRight),
+      limit: maxRight, nodes: first.length, dryRun: dryRun,
+      movedIds: movedIds
+    };
+  }
+
+  // 间距重排 + 连线重连 + 外圈改道，一条龙（外部只需调这个）
+  function polishLayout(prefix, opts) {
+    ensureRuntime();
+    var o = opts || {};
+    var s = reflowSpacing(prefix, o);
+    var eids = listEdges(prefix);
+    if (eids.length) rebindEdges(eids);
+    var cross = detectCrossings(prefix);
+    var before = cross.crossings, rerouted = 0;
+    if (cross.crossings) {
+      var bad = {}, i;
+      for (i = 0; i < cross.list.length; i++) bad[cross.list[i].edge] = 1;
+      var ids = Object.keys(bad);
+      try {
+        var rr = autoRouteAround(ids);
+        rerouted = rr.routed;
+      } catch (err) { /* 没泳道时跳过 */ }
+      cross = detectCrossings(prefix);
+    }
+    return {
+      spacing: s, edgesRebound: eids.length,
+      crossingsBefore: before, rerouted: rerouted,
+      crossingsAfter: cross.crossings
+    };
+  }
+
   // 列出所有连线 id（可按前缀过滤），省得外部自己遍历
   function listEdges(prefix) {
     ensureRuntime();
@@ -951,6 +1066,8 @@
     detectCrossings: detectCrossings,
     routeAround: routeAround,
     autoRouteAround: autoRouteAround,
+    reflowSpacing: reflowSpacing,
+    polishLayout: polishLayout,
     ANCHOR: ANCHOR,
     getViewBox: getViewBox,
     clampIntoView: clampIntoView,
