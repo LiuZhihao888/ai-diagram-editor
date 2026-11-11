@@ -381,6 +381,22 @@ for (const name of ['reflowSpacingExpr', 'polishLayoutExpr']) {
   });
 }
 
+// ---------------------------------------------------------------- [体检 auditLayoutExpr]
+ok('auditLayoutExpr 可编译', () => syntaxOk(P.auditLayoutExpr('ai_')));
+ok('auditLayoutExpr 带 NO_BRIDGE 守卫', () => {
+  assert.match(P.auditLayoutExpr('ai_'), /NO_BRIDGE/);
+});
+ok('auditLayoutExpr 内含三项判定', () => {
+  const e = P.auditLayoutExpr('ai_');
+  assert.match(e, /badAnchor/);
+  assert.match(e, /crossings/);
+  assert.match(e, /tightGaps/);
+  assert.match(e, /pass:/);
+});
+ok('auditLayoutExpr 的通过阈值是 minGap>=60', () => {
+  assert.match(P.auditLayoutExpr('ai_'), /minGap >= 60/);
+});
+
 // ---------------------------------------------------------------- 汇总
 console.log('');
 if (fails.length) {
