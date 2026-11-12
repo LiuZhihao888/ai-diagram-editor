@@ -18,7 +18,7 @@ description: "在用户已打开的 ProcessOn 画布上做 AI 增量改图。读
 - 多标签场景精确定位目标图、视口跳转不打扰用户
 
 > 页面侧 JS 片段全部集中在本技能目录的 `lib/page.mjs`。**不要现场手写 JS** —— 用那里的函数，参数走 `JSON.stringify`。
-> 离线自检：`node test/selftest.mjs`（46 项）+ `node test/parity.mjs` + `node test/verify-pool.mjs`（33 项）—— 都不需要浏览器、不碰画布，本技能自带。
+> 离线自检：`node test/selftest.mjs`（94 项）+ `node test/parity.mjs` + `node test/verify-pool.mjs`（33 项）—— 都不需要浏览器、不碰画布，本技能自带。
 
 ---
 
@@ -406,7 +406,7 @@ var g = POBridge.getPoolRows('ai_pool_<时间戳>');
 ```bash
 cd dsh/skill/dsh-processon-diagram-editor
 node test/verify-pool.mjs      # 33 项：片段语法/转义 + 假运行时源码↔产物 parity + 真实字段不变量 + 边界守卫
-node test/selftest.mjs         # 46 项：原有自检 + 新增池片段/导出/书签断言
+node test/selftest.mjs         # 94 项：片段/转义/守卫/自包含/书签版本/池片段/侧栏卡/验收判定
 node test/parity.mjs           # 源码与压缩产物行为一致（含泳道池断言）
 node ../../../bridge/build.mjs --check   # 产物未漂移（在 bridge/ 下运行亦可）
 ```
@@ -865,6 +865,67 @@ console.log(s.passed + '/' + s.total + ' 通过');
 
 ---
 
+## 五之七、本地技能与仓库的同步
+
+这套技能同时存在于两个地方，**必须分清谁是谁**：
+
+| 位置 | 角色 |
+|---|---|
+| 仓库 `dsh/skill/dsh-processon-diagram-editor/` | **唯一真相**，GitHub 上看到的就是它 |
+| `~/.dsh/skills/dsh-processon-diagram-editor/` | **产物**，实际被 DSH 加载的那份 |
+
+**不要直接在 `~/.dsh/skills/` 里改东西** —— 改了不回流仓库，下次同步就被覆盖。
+要改就先改仓库，再同步。
+
+### 怎么同步
+
+```bash
+cd <仓库根>
+node tools/sync-skill.mjs --dry    # 先看会改哪些，不落盘
+node tools/sync-skill.mjs          # 执行（自动备份 + 更新版本号 + 同步后自检）
+```
+
+脚本会：比对差异 → 备份到 `<目标>.backup-<时间戳>` → 复制 → 写 `_meta.json` → 复验一致性。
+
+### 版本号是「内容指纹」，不是手写编号
+
+`_meta.json` 的 `version` 形如 `0.2.510473`，第三段是**内容哈希**派生的数字。
+
+**为什么要这样**：历史上两边 `_meta.json` 都写着 `0.2.0`，但内容差了 4 天
+（SKILL.md 24KB vs 40KB，测试 36 项 vs 94 项）。光看版本号根本发现不了不同。
+现在内容一变、版本号就变，`diff` 一眼可见。
+
+同步时会写入三个字段：
+
+```json
+{
+  "version": "0.2.510473",   // 0.2.<内容哈希>
+  "syncedAt": 1794454358619, // 同步时间戳（毫秒）
+  "contentHash": "510473"
+}
+```
+
+同一个内容同步两次，版本号不变；内容一变，版本号立刻不同。
+
+### 两种布局下的测试差异（正常现象）
+
+测试需要读 `bridge/pobridge.js`（源码）来做 parity 断言。这个文件**只存在于仓库布局**。
+技能被单独安装到 `~/.dsh/skills/` 时没有源码，相关断言会**跳过而不是失败**：
+
+| 布局 | selftest | verify-pool |
+|---|---|---|
+| 仓库（`dsh/skill/...`） | **94 项全过** | **33 项全过** |
+| 独立安装（`~/.dsh/skills/...`） | 82 过 + 12 跳过 | 32 过 + 1 跳过 |
+
+跳到的那 12 项都是「源码里有没有某个常量/导出」这类断言 —— 独立安装时无从校验，跳过是对的。
+**如果你在安装布局看到 12 项 skip，那不是坏了。**
+
+> 注意：测试**刻意不读** `bridge-src/pobridge.js`。那是历史遗留的分叉副本
+> （比仓库旧 23KB、缺 `createSideCard`/`detectOverlaps`），拿它做断言只会得到假失败。
+> 现在已经从安装目录删除，只在备份里留档。
+
+---
+
 ## 六、红色标记
 
 ```js
@@ -941,13 +1002,26 @@ ProcessOn 闭源，内部 API 可能随发版变化。若注入后 `readGraph()`
 
 ## 维护（改代码的人看）
 
-桥接层源码只有一份：仓库 `bridge/pobridge.js`。
-技能里的 `pobridge.min.js` 是**构建产物**，别手改。
+桥接层源码**只有一份**，在仓库根目录的 `bridge/pobridge.js`。
+技能目录里的 `pobridge.min.js` / `scripts/bookmarklet.txt` / `scripts/install-bookmarklet.html`
+都是**构建产物**，别手改。
+
+**为什么要用同步脚本**：这套技能同时存在于两个地方 —— 仓库（来源）和
+`~/.dsh/skills/dsh-processon-diagram-editor`（实际加载的）。历史上两边各自改过，
+源码出现分叉（技能目录曾自带一份 `bridge-src/pobridge.js`，与仓库版本差 23KB）。
+现在规定：**仓库是唯一真相，技能目录是产物**。
 
 ```bash
-node bridge/build.mjs           # 重新构建所有产物
-node bridge/build.mjs --check   # 校验产物是否与源码一致（不一致退出码 1）
-node test/selftest.mjs          # 46 项离线断言（片段/转义/守卫/自包含/书签版本/池片段）
-node test/parity.mjs            # 两个产物行为是否一致（压缩后仍等价）
-node test/verify-pool.mjs       # 33 项：泳道池行数能力离线验证
+# 在仓库根目录
+node bridge/build.mjs              # 重建产物（需 esbuild，见 bridge/package.json）
+node bridge/build.mjs --check      # 校验产物与源码一致（不一致退出码 1）
+
+# 同步到已安装技能（会自动备份、保留 bridge-src、校验测试数）
+node tools/sync-skill.mjs          # 默认目标 ~/.dsh/skills/dsh-processon-diagram-editor
+node tools/sync-skill.mjs --dry    # 只看会改哪些文件，不落盘
+node tools/sync-skill.mjs --target <path>   # 自定义目标
+
+node test/selftest.mjs             # 94 项离线断言
+node test/verify-pool.mjs          # 33 项泳道池行数能力
+node test/parity.mjs               # 两个产物行为一致
 ```

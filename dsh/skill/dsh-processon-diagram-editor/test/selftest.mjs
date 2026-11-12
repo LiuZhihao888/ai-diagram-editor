@@ -17,10 +17,16 @@ import { fileURLToPath } from 'node:url';
 import * as P from '../lib/page.mjs';
 
 let pass = 0;
+let skip = 0;
 const fails = [];
+const skips = [];
 const ok = (name, fn) => {
   try { fn(); pass++; }
-  catch (e) { fails.push({ name, message: e.message }); }
+  catch (e) {
+    // 桥接层源码不在旁边时（技能被单独安装），这类断言跳过而不是判失败。
+    if (e && e.message === 'SKIP_NO_BRIDGE_SRC') { skip++; skips.push(name); return; }
+    fails.push({ name, message: e.message });
+  }
 };
 
 /** 只做语法检查：能构造 Function 就说明这段 JS 没有语法错误。 */
@@ -112,7 +118,28 @@ ok('existsExpr 可用于超时后探测', () => {
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SKILL = path.resolve(HERE, '..');   // test/ 的上一级就是技能根
 const MIN = path.join(SKILL, 'pobridge.min.js');
-const REPO = path.resolve(SKILL, '..', '..', '..');   // 技能 → dsh/ → 仓库根
+// 桥接层源码的位置。仓库布局下在 <仓库根>/bridge/pobridge.js；
+// 但技能也可能被单独安装到 ~/.dsh/skills/（此时向上三级不是仓库根）。
+// 所以按「候选路径依次探测」而不是硬算，找不到就明确跳过而不是报 ENOENT。
+const BRIDGE_SRC = (() => {
+  // 只认仓库布局的 bridge/pobridge.js —— 那是唯一真相。
+  // 刻意**不**回退到技能目录的 bridge-src/pobridge.js：那是历史遗留的分叉副本，
+  // 内容比仓库旧（曾差 23KB、缺 createSideCard/detectOverlaps），
+  // 拿它做断言会得到「假失败」，反而掩盖真正的问题。
+  const candidates = [
+    path.resolve(SKILL, '..', '..', '..', 'bridge', 'pobridge.js'), // 仓库布局
+    path.resolve(SKILL, '..', 'bridge', 'pobridge.js'),
+  ];
+  for (const c of candidates) if (fs.existsSync(c)) return c;
+  return null;
+})();
+const HAS_BRIDGE_SRC = BRIDGE_SRC !== null;
+
+/** 读桥接层源码；找不到时抛出可读信息（这些断言会被记为 skip 而不是 fail）。 */
+function bridgeCode() {
+  if (!BRIDGE_SRC) throw new Error('SKIP_NO_BRIDGE_SRC');
+  return fs.readFileSync(BRIDGE_SRC, 'utf8');
+}
 
 ok('技能里存在 pobridge.min.js', () => assert.ok(fs.existsSync(MIN)));
 ok('pobridge.min.js 语法合法', () => syntaxOk(fs.readFileSync(MIN, 'utf8')));
@@ -138,13 +165,13 @@ ok('focusRect 不用 fitTheCanvas（会重置用户缩放）', () => {
   const bridge = fs.readFileSync(path.join(SKILL, 'lib', 'page.mjs'), 'utf8');
   assert.ok(/focusRect/.test(bridge), '缺 focusRect');
   // fitTheCanvas 只允许作为显式请求存在，不能出现在滚动逻辑里
-  const bridgeSrc = fs.readFileSync(path.join(REPO, 'bridge', 'pobridge.js'), 'utf8');
+  const bridgeSrc = bridgeCode();
   const focusBlock = bridgeSrc.slice(bridgeSrc.indexOf('function focusRect'), bridgeSrc.indexOf('// ---------- 创建节点'));
   assert.ok(!/fitTheCanvas/.test(focusBlock), 'focusRect 里不该调 fitTheCanvas');
   assert.ok(/scrollLeft/.test(focusBlock), 'focusRect 应该用 scrollLeft');
 });
 ok('viewBox 有 NaN 断言', () => {
-  const bridgeSrc = fs.readFileSync(path.join(REPO, 'bridge', 'pobridge.js'), 'utf8');
+  const bridgeSrc = bridgeCode();
   assert.ok(/VIEWBOX_INVALID/.test(bridgeSrc), '缺 VIEWBOX_INVALID 断言');
   assert.ok(/isFinite/.test(bridgeSrc), '缺 isFinite 守卫');
 });
@@ -241,7 +268,7 @@ ok('createEdgeExpr 会传出 fromSide/toSide', () => {
   assert.match(e, /toSide/);
 });
 ok('桥接层导出锚点能力', () => {
-  const b = fs.readFileSync(path.join(REPO, 'bridge', 'pobridge.js'), 'utf8');
+  const b = bridgeCode();
   for (const k of ['rebindEdge', 'rebindEdges', 'computeEdgeGeometry', 'detectCrossings', 'resetBrokenLinkers', 'ANCHOR']) {
     assert.ok(b.includes(k), 'bridge 缺导出: ' + k);
   }
@@ -255,7 +282,7 @@ ok('书签产物含锚点能力', () => {
   }
 });
 ok('angle 常量方向正确（L=0 T=PI/2 R=PI B=3PI/2）', () => {
-  const b = fs.readFileSync(path.join(REPO, 'bridge', 'pobridge.js'), 'utf8');
+  const b = bridgeCode();
   assert.match(b, /L:\s*0/);
   assert.match(b, /T:\s*Math\.PI\s*\/\s*2/);
   assert.match(b, /R:\s*Math\.PI[,\s]/);
@@ -367,7 +394,7 @@ ok('reflowSpacing: 单节点行不产生位移', () => {
 });
 
 ok('桥接层导出 reflowSpacing / polishLayout', () => {
-  const b = fs.readFileSync(path.join(REPO, 'bridge', 'pobridge.js'), 'utf8');
+  const b = bridgeCode();
   assert.ok(b.includes('reflowSpacing: reflowSpacing'), '缺 reflowSpacing 导出');
   assert.ok(b.includes('polishLayout: polishLayout'), '缺 polishLayout 导出');
   assert.ok(b.includes('fallback'), '超宽降级参数缺失');
@@ -419,23 +446,23 @@ ok('auditLayoutExpr 含 overlaps 检查', () => {
 
 // ---------------------------------------------------------------- [侧栏说明卡]
 ok('桥接层导出 createSideCard / auditSideCard', () => {
-  const b = fs.readFileSync(path.join(REPO, 'bridge', 'pobridge.js'), 'utf8');
+  const b = bridgeCode();
   assert.ok(b.includes('createSideCard: createSideCard'), '缺 createSideCard');
   assert.ok(b.includes('auditSideCard: auditSideCard'), '缺 auditSideCard');
 });
 ok('createSideCard 会报告夹取与修复状态', () => {
-  const b = fs.readFileSync(path.join(REPO, 'bridge', 'pobridge.js'), 'utf8');
+  const b = bridgeCode();
   assert.match(b, /clampedAtCreate/);
   assert.match(b, /repairedByUpdate/);
   assert.match(b, /alignedWithPool/);
 });
 ok('createSideCard 用 LAYOUT.MIN_X 而非硬编码 -240', () => {
-  const b = fs.readFileSync(path.join(REPO, 'bridge', 'pobridge.js'), 'utf8');
+  const b = bridgeCode();
   assert.match(b, /x < LAYOUT\.MIN_X/);
   assert.match(b, /MIN_X:\s*-240/);
 });
 ok('auditSideCard 返回 pass 判定', () => {
-  const b = fs.readFileSync(path.join(REPO, 'bridge', 'pobridge.js'), 'utf8');
+  const b = bridgeCode();
   assert.match(b, /pass: overlaps\.length === 0/);
 });
 
@@ -503,14 +530,14 @@ ok('summarize 统计正确', () => {
 });
 
 ok('THRESHOLDS 与 bridge LAYOUT.GAP_FLOOR 一致', () => {
-  const b = fs.readFileSync(path.join(REPO, 'bridge', 'pobridge.js'), 'utf8');
+  const b = bridgeCode();
   const m = /GAP_FLOOR:\s*(\d+)/.exec(b);
   assert.ok(m, 'bridge 未定义 GAP_FLOOR');
   assert.equal(Number(m[1]), V.THRESHOLDS.minGap, '两处阈值必须一致');
 });
 
 ok('LAYOUT 常量齐全且带推导注释', () => {
-  const b = fs.readFileSync(path.join(REPO, 'bridge', 'pobridge.js'), 'utf8');
+  const b = bridgeCode();
   for (const k of ['LABEL_MAX_W', 'LABEL_BREATH', 'GAP_TARGET', 'GAP_FLOOR', 'CARD_GAP', 'MIN_X']) {
     assert.ok(new RegExp(k + ':').test(b), '缺常量 ' + k);
   }
@@ -519,7 +546,7 @@ ok('LAYOUT 常量齐全且带推导注释', () => {
 });
 
 ok('桥接层导出 detectOverlaps / LAYOUT', () => {
-  const b = fs.readFileSync(path.join(REPO, 'bridge', 'pobridge.js'), 'utf8');
+  const b = bridgeCode();
   assert.ok(b.includes('detectOverlaps: detectOverlaps'));
   assert.ok(b.includes('LAYOUT: LAYOUT'));
 });
@@ -531,4 +558,8 @@ if (fails.length) {
   console.error('\n✗ ' + fails.length + ' 项失败 / ' + (pass + fails.length) + ' 项');
   process.exit(1);
 }
-console.log('✓ ' + pass + ' 项自检全部通过');
+if (skip) {
+  console.log('  SKIP  ' + skip + ' 项（桥接层源码不在技能目录旁，仅仓库布局才检查）');
+  for (const s of skips) console.log('        - ' + s);
+}
+console.log('✓ ' + pass + ' 项自检通过' + (skip ? '（跳过 ' + skip + ' 项）' : '，全部通过'));
