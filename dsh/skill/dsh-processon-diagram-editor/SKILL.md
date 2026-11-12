@@ -794,6 +794,77 @@ A → B → C → D
 
 ---
 
+## 五之六、验收清单 —— 画完必须逐项过
+
+**这是唯一的验收标准。** 六项全过才算合格；任何一项不过就是没过，不要用「看起来还行」代替。
+
+```js
+auditLayoutExpr('ai_', 9)   // 第二个参数是页索引，必须有
+```
+
+| # | 字段 | 要求 | 不过意味着什么 |
+|---|---|---|---|
+| 1 | `badAnchor` | **= 0** | 有连线没绑在边中点，会渲染成斜线 |
+| 2 | `crossings` | **= 0** | 有连线穿过别的节点，挡阅读 |
+| 3 | `tightGaps` | **= 0** | 有横向间隙小于下限，标签会压住线 |
+| 4 | `minGap` | **>= 60** | 最小间隙太小，视觉上「挤」 |
+| 5 | `overlaps` | **= 0** | 两个节点压在一起了（`reflowSpacing` 只改 x，可能撞上邻行） |
+| 6 | `lkSkipped` | **= 0** | 有连线因作用域不匹配被跳过，此时 `badAnchor=0` **不可信** |
+
+返回值里还有 `pass` 字段，是这六项的合成判定。**看 `pass` 就够，但出问题时要看具体字段定位。**
+
+### 阈值的由来（别凭感觉改）
+
+这些数字集中在 `bridge/pobridge.js` 的 `LAYOUT` 常量里，改之前先读这段注释：
+
+| 常量 | 值 | 推导 |
+|---|---|---|
+| `LABEL_MAX_W` | 47 | 连线标签实测最宽（「真实性核验」47px，「材料匹配」38px） |
+| `LABEL_BREATH` | 16 | 标签两侧呼吸空间 |
+| `GAP_TARGET` | 80 | = 47 + 16×2，取整 |
+| `GAP_FLOOR` | 60 | 池宽不够时的降级下限；标签能完整放下且不贴边的最低值。**用户已确认 60 正确**，不要改成 65 之类的「留缓冲」值 |
+| `CARD_GAP` | 16 | 说明卡右沿到池左沿 |
+| `MIN_X` | -240 | 画布坐标下限，更小的 x 会被夹回 |
+
+**为什么 60 不能随便调大**：p6 的池宽 2320 只能撑到 60。调到 65 会让 p6 永久不合格，
+而那不是画错了、是泳道本身不够宽 —— 属于结构问题，不该让验收标准背这个锅。
+
+### 用脚本验收（推荐）
+
+```js
+import { judge, formatRow, summarize } from './test/verify-layout.mjs';
+
+// 每页：切页 → 等加载稳定 → 采样 → 判定
+const rows = [];
+for (const p of [0,1,2,3,4,5,6,7,8,9]) {
+  await gotoPageAndWaitStable(p);
+  const r = JSON.parse(await evaluate(auditLayoutExpr('ai_', p)));
+  rows.push({ page: p, r });
+  console.log(formatRow(p, r));
+}
+const s = summarize(rows);
+console.log(s.passed + '/' + s.total + ' 通过');
+```
+
+`judge()` 的判定逻辑与 `auditLayoutExpr` **同源**（阈值都从 `LAYOUT` 取），
+不会出现「脚本说过了但实际没过」的分歧。离线单测覆盖在 `test/selftest.mjs`。
+
+### 采样前必须等页面稳定
+
+**这条不遵守，验收结论就是假的。** 详见「五之四」的两个坑：切页是懒加载的，
+立刻采样会读到上一页与这一页的混合态。
+
+```js
+// 页面指纹：当前 DOM 里只剩目标页的 ai_ 元素，才算切页完成
+(function(){var E=Model.define.elements,seen={};
+  for(var id in E){ if(id.indexOf('ai_')!==0) continue;
+    var m=id.match(/_p(\d+)_/); if(m) seen[m[1]]=1; }
+  return JSON.stringify(Object.keys(seen));})()
+// 期望返回 ["9"] 这种单一元素数组
+```
+
+---
+
 ## 六、红色标记
 
 ```js

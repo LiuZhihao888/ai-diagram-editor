@@ -35,6 +35,28 @@
     font: '255,0,0'
   };
 
+  // ---------- 布局常量（验收阈值的唯一来源）----------
+  // 这些数字不是拍脑袋定的，每个都有推导过程。改之前先读理由。
+  var LAYOUT = {
+    // 连线标签实测最宽 47px（"材料匹配" 38px / "真实性核验" 47px）。
+    // 标签压在线上会让人以为线「断了」，所以线长必须明显大于标签宽。
+    LABEL_MAX_W: 47,
+    // 标签两侧各留一点呼吸，否则贴着节点边看着憋。
+    LABEL_BREATH: 16,
+
+    // 理想间隙 = 47 + 16*2 = 79，取整到 80。
+    GAP_TARGET: 80,
+    // 降级间隙：泳道池不够宽时的下限。60 是「标签能完整放下且不贴边」的
+    // 最低可接受值（47 + 6.5*2），再低标签就会盖住节点边框。
+    // 用户已确认 60 正确，不要改成 65 之类的「留缓冲」值。
+    GAP_FLOOR: 60,
+
+    // 卡片右侧到泳道池左沿的间距
+    CARD_GAP: 16,
+    // 画布坐标下限（createNode 会把更小的 x 夹回来）
+    MIN_X: -240
+  };
+
   function ensureRuntime() {
     var missing = [];
     if (!global.Model) missing.push('Model');
@@ -533,8 +555,8 @@
   function reflowSpacing(prefix, opts) {
     ensureRuntime();
     var o = opts || {};
-    var target = typeof o.target === 'number' ? o.target : 80;
-    var fallback = typeof o.fallback === 'number' ? o.fallback : 60;
+    var target = typeof o.target === 'number' ? o.target : LAYOUT.GAP_TARGET;
+    var fallback = typeof o.fallback === 'number' ? o.fallback : LAYOUT.GAP_FLOOR;
     var maxRight = typeof o.maxRight === 'number' ? o.maxRight : null;
     var dryRun = !!o.dryRun;
     var E = global.Model.define.elements;
@@ -655,11 +677,11 @@
 
     var pw = pool.props;
     var cardW = typeof o.w === 'number' ? o.w : 280;
-    var gap = typeof o.gap === 'number' ? o.gap : 16;
+    var gap = typeof o.gap === 'number' ? o.gap : LAYOUT.CARD_GAP;
     // 卡片右沿贴住池左沿留 gap，左沿尽量靠左但不越 -240 下限
     var right = pw.x - gap;
     var x = right - cardW;
-    if (x < -240) x = -240;
+    if (x < LAYOUT.MIN_X) x = LAYOUT.MIN_X;
 
     // 先把该区域滚进视口，否则 y 会被夹
     try {
@@ -740,6 +762,53 @@
       if (ix > 1 && iy > 1) overlaps.push({ id: id, ix: Math.round(ix), iy: Math.round(iy) });
     }
     return { id: cardId, overlaps: overlaps.length, list: overlaps, pass: overlaps.length === 0 };
+  }
+
+  // ---------- 重叠检测 ----------
+  // 【为什么必须查】reflowSpacing 只改 x 不改 y，把节点往右推时，
+  // 有可能把它推到别的行的节点正上方/下方，形成视觉重叠。
+  // 没有这项检查时，「间距合格」和「没有压在一起」是两回事 —— 后者可能悄悄坏掉。
+  //
+  // 判定：两个矩形在 x 和 y 方向都相交超过 1px 才算重叠（1px 容差避免边界误报）。
+  // 说明块（_note_/_hdr_）和泳道池按默认排除：它们本来就成片覆盖。
+  function detectOverlaps(prefix, opts) {
+    ensureRuntime();
+    var o = opts || {};
+    var includeDeco = !!o.includeDecorations;
+    var E = global.Model.define.elements;
+    var boxes = [], id;
+    for (id in E) {
+      if (prefix && id.indexOf(prefix) !== 0) continue;
+      var el = E[id];
+      if (!el || !el.props) continue;
+      if (/linker/i.test(el.name || '')) continue;
+      if (!includeDeco) {
+        if (/pool|lane/i.test(el.name || '')) continue;
+        if (/_hdr_|_note_/.test(id)) continue;
+      }
+      if (el.props.w == null || el.props.h == null) continue;
+      boxes.push({
+        id: id,
+        x: el.props.x, y: el.props.y, w: el.props.w, h: el.props.h,
+        text: String((el.textBlock && el.textBlock[0] && el.textBlock[0].text) || '').slice(0, 14)
+      });
+    }
+    var pairs = [];
+    for (var a = 0; a < boxes.length; a++) {
+      for (var b = a + 1; b < boxes.length; b++) {
+        var p = boxes[a], q = boxes[b];
+        var ix = Math.min(p.x + p.w, q.x + q.w) - Math.max(p.x, q.x);
+        var iy = Math.min(p.y + p.h, q.y + q.h) - Math.max(p.y, q.y);
+        if (ix > 1 && iy > 1) {
+          pairs.push({
+            a: p.id, b: q.id,
+            aText: p.text, bText: q.text,
+            overlapW: Math.round(ix), overlapH: Math.round(iy)
+          });
+        }
+      }
+    }
+    return { overlaps: pairs.length, boxes: boxes.length, list: pairs };
   }
 
   // 列出所有连线 id（可按前缀过滤），省得外部自己遍历
@@ -1178,7 +1247,9 @@
     polishLayout: polishLayout,
     createSideCard: createSideCard,
     auditSideCard: auditSideCard,
+    detectOverlaps: detectOverlaps,
     ANCHOR: ANCHOR,
+    LAYOUT: LAYOUT,
     getViewBox: getViewBox,
     clampIntoView: clampIntoView,
     focusRect: focusRect,

@@ -349,13 +349,20 @@ export function polishLayoutExpr(prefix, opts) {
   ].join('\n');
 }
 
-/** 页面体检：间距/交叉/锚点三项一次算完（验收标准就在这里，别在别处重复实现）。
+/** 页面体检 —— 验收标准的**唯一实现**。
+ *
+ *  六项检查，全部通过才算合格（见 SKILL.md「验收清单」）：
+ *    1. badAnchor   锚点必须在边中点      期望 0
+ *    2. crossings   连线不穿过非端点节点  期望 0
+ *    3. tightGaps   没有过紧的横向间隙    期望 0
+ *    4. minGap      最小间隙              期望 >= 60
+ *    5. overlaps    节点之间不重叠        期望 0
+ *    6. lkSkipped   没有因作用域漏算的连线 期望 0（>0 时 badAnchor 不可信）
  *
  *  【为什么必须传 pageIndex】ProcessOn 的 Model.define.elements 只装「当前页」，
  *  但切页是懒加载的：刚点完标签页时，元素会从上一页的残留逐步换成目标页。
  *  这个过渡窗口里做全局 /^ai_/ 统计会**混入上一页的元素**，得出假失败或假通过。
  *  实测踩过：p9 在过渡态报 crossings=6，稳定后实际是 0。
- *  传 pageIndex 后按 '_pN_' 子串做页内作用域，边界clear。
  */
 export function auditLayoutExpr(prefix, pageIndex) {
   var scope = (typeof pageIndex === 'number')
@@ -364,6 +371,7 @@ export function auditLayoutExpr(prefix, pageIndex) {
   return [
     '(function(prefix, scopeSub){',
     "  if (typeof window.POBridge !== 'object') return JSON.stringify({error:'NO_BRIDGE'});",
+    '  var FLOOR = (window.POBridge.LAYOUT && window.POBridge.LAYOUT.GAP_FLOOR) || 60;',
     '  var E = window.Model.define.elements, nodes = {}, badAnchor = 0, cross = 0, tight = 0, minGap = 9999;',
     '  var id, i;',
     '  function inScope(x) {',
@@ -417,6 +425,21 @@ export function auditLayoutExpr(prefix, pageIndex) {
     '      }',
     '    }',
     '  }',
+    '  // 重叠：两矩形在 x/y 双向都相交超过 1px',
+    '  var overlaps = 0, overlapSamples = [];',
+    '  var bl = [];',
+    '  for (var nb in nodes) bl.push({ id: nb, x: nodes[nb].x, y: nodes[nb].y, w: nodes[nb].w, h: nodes[nb].h });',
+    '  for (var p1 = 0; p1 < bl.length; p1++) {',
+    '    for (var p2 = p1 + 1; p2 < bl.length; p2++) {',
+    '      var A = bl[p1], B = bl[p2];',
+    '      var ox = Math.min(A.x + A.w, B.x + B.w) - Math.max(A.x, B.x);',
+    '      var oy = Math.min(A.y + A.h, B.y + B.h) - Math.max(A.y, B.y);',
+    '      if (ox > 1 && oy > 1) {',
+    '        overlaps++;',
+    '        if (overlapSamples.length < 5) overlapSamples.push({ a: A.id, b: B.id, w: Math.round(ox), h: Math.round(oy) });',
+    '      }',
+    '    }',
+    '  }',
     '  var rows = {};',
     '  for (var n2 in nodes) { var k = Math.round(nodes[n2].y); (rows[k] = rows[k] || []).push({ x: nodes[n2].x, w: nodes[n2].w }); }',
     '  for (var k2 in rows) {',
@@ -424,12 +447,13 @@ export function auditLayoutExpr(prefix, pageIndex) {
     '    for (var i2 = 1; i2 < arr.length; i2++) {',
     '      var gp = arr[i2].x - (arr[i2 - 1].x + arr[i2 - 1].w);',
     '      if (gp < minGap) minGap = gp;',
-    '      if (gp < 60) tight++;',
+    '      if (gp < FLOOR) tight++;',
     '    }',
     '  }',
+    '  var pass = (badAnchor === 0 && cross === 0 && tight === 0 && minGap >= FLOOR && overlaps === 0 && skipped === 0);',
     '  return JSON.stringify({ nodes: Object.keys(nodes).length, edges: edgeCount, lkSkipped: skipped,',
     '    badAnchor: badAnchor, crossings: cross, tightGaps: tight, minGap: minGap,',
-    '    pass: (badAnchor === 0 && cross === 0 && tight === 0 && minGap >= 60) });',
+    '    overlaps: overlaps, overlapSamples: overlapSamples, gapFloor: FLOOR, pass: pass });',
     '})(' + JSON.stringify(prefix || '') + ', ' + scope + ')',
   ].join('\n');
 }

@@ -406,8 +406,15 @@ ok('auditLayoutExpr 内含三项判定', () => {
   assert.match(e, /tightGaps/);
   assert.match(e, /pass:/);
 });
-ok('auditLayoutExpr 的通过阈值是 minGap>=60', () => {
-  assert.match(P.auditLayoutExpr('ai_'), /minGap >= 60/);
+ok('auditLayoutExpr 阈值取自 LAYOUT.GAP_FLOOR（不再硬编码数字）', () => {
+  const e = P.auditLayoutExpr('ai_');
+  assert.match(e, /LAYOUT\.GAP_FLOOR/, '应从桥接层常量读取');
+  assert.match(e, /minGap >= FLOOR/, '判定应使用 FLOOR 变量');
+});
+ok('auditLayoutExpr 含 overlaps 检查', () => {
+  const e = P.auditLayoutExpr('ai_');
+  assert.match(e, /overlaps/);
+  assert.match(e, /overlapSamples/);
 });
 
 // ---------------------------------------------------------------- [侧栏说明卡]
@@ -422,13 +429,99 @@ ok('createSideCard 会报告夹取与修复状态', () => {
   assert.match(b, /repairedByUpdate/);
   assert.match(b, /alignedWithPool/);
 });
-ok('createSideCard 记录 -240 坐标下限', () => {
+ok('createSideCard 用 LAYOUT.MIN_X 而非硬编码 -240', () => {
   const b = fs.readFileSync(path.join(REPO, 'bridge', 'pobridge.js'), 'utf8');
-  assert.match(b, /x < -240/);
+  assert.match(b, /x < LAYOUT\.MIN_X/);
+  assert.match(b, /MIN_X:\s*-240/);
 });
 ok('auditSideCard 返回 pass 判定', () => {
   const b = fs.readFileSync(path.join(REPO, 'bridge', 'pobridge.js'), 'utf8');
   assert.match(b, /pass: overlaps\.length === 0/);
+});
+
+// ---------------------------------------------------------------- [验收脚本 verify-layout]
+const V = await import('./verify-layout.mjs');
+
+ok('judge: 全部达标判 pass', () => {
+  const r = { badAnchor: 0, crossings: 0, tightGaps: 0, overlaps: 0, lkSkipped: 0, minGap: 80 };
+  const j = V.judge(r);
+  assert.equal(j.pass, true);
+  assert.deepEqual(j.failures, []);
+});
+
+ok('judge: minGap 60 恰好通过（floor 含等于）', () => {
+  const r = { badAnchor: 0, crossings: 0, tightGaps: 0, overlaps: 0, lkSkipped: 0, minGap: 60 };
+  assert.equal(V.judge(r).pass, true);
+});
+
+ok('judge: minGap 59 判失败', () => {
+  const r = { badAnchor: 0, crossings: 0, tightGaps: 0, overlaps: 0, lkSkipped: 0, minGap: 59 };
+  const j = V.judge(r);
+  assert.equal(j.pass, false);
+  assert.match(j.failures.join(' '), /minGap=59/);
+});
+
+ok('judge: overlaps>0 判失败（新增检查）', () => {
+  const r = { badAnchor: 0, crossings: 0, tightGaps: 0, overlaps: 2, lkSkipped: 0, minGap: 80 };
+  const j = V.judge(r);
+  assert.equal(j.pass, false);
+  assert.match(j.failures.join(' '), /overlaps=2/);
+});
+
+ok('judge: lkSkipped>0 判失败（防漏算）', () => {
+  const r = { badAnchor: 0, crossings: 0, tightGaps: 0, overlaps: 0, lkSkipped: 3, minGap: 80 };
+  const j = V.judge(r);
+  assert.equal(j.pass, false);
+  assert.match(j.failures.join(' '), /lkSkipped=3/);
+});
+
+ok('judge: 缺字段判失败而不是误判通过', () => {
+  const j = V.judge({ badAnchor: 0, crossings: 0 });
+  assert.equal(j.pass, false);
+  assert.ok(j.failures.length > 0);
+});
+
+ok('judge: NO_BRIDGE 判失败', () => {
+  assert.equal(V.judge({ error: 'NO_BRIDGE' }).pass, false);
+});
+
+ok('judge: null / undefined 不崩', () => {
+  assert.equal(V.judge(null).pass, false);
+  assert.equal(V.judge(undefined).pass, false);
+});
+
+ok('summarize 统计正确', () => {
+  const rows = [
+    { page: 0, r: { badAnchor: 0, crossings: 0, tightGaps: 0, overlaps: 0, lkSkipped: 0, minGap: 80 } },
+    { page: 1, r: { badAnchor: 1, crossings: 0, tightGaps: 0, overlaps: 0, lkSkipped: 0, minGap: 80 } },
+  ];
+  const s = V.summarize(rows);
+  assert.equal(s.total, 2);
+  assert.equal(s.passed, 1);
+  assert.equal(s.failed, 1);
+  assert.equal(s.allPass, false);
+});
+
+ok('THRESHOLDS 与 bridge LAYOUT.GAP_FLOOR 一致', () => {
+  const b = fs.readFileSync(path.join(REPO, 'bridge', 'pobridge.js'), 'utf8');
+  const m = /GAP_FLOOR:\s*(\d+)/.exec(b);
+  assert.ok(m, 'bridge 未定义 GAP_FLOOR');
+  assert.equal(Number(m[1]), V.THRESHOLDS.minGap, '两处阈值必须一致');
+});
+
+ok('LAYOUT 常量齐全且带推导注释', () => {
+  const b = fs.readFileSync(path.join(REPO, 'bridge', 'pobridge.js'), 'utf8');
+  for (const k of ['LABEL_MAX_W', 'LABEL_BREATH', 'GAP_TARGET', 'GAP_FLOOR', 'CARD_GAP', 'MIN_X']) {
+    assert.ok(new RegExp(k + ':').test(b), '缺常量 ' + k);
+  }
+  assert.match(b, /47 \+ 16\*2/, '应写明 80 的推导');
+  assert.match(b, /用户已确认 60 正确/, '应写明 60 已确认');
+});
+
+ok('桥接层导出 detectOverlaps / LAYOUT', () => {
+  const b = fs.readFileSync(path.join(REPO, 'bridge', 'pobridge.js'), 'utf8');
+  assert.ok(b.includes('detectOverlaps: detectOverlaps'));
+  assert.ok(b.includes('LAYOUT: LAYOUT'));
 });
 
 // ---------------------------------------------------------------- 汇总
