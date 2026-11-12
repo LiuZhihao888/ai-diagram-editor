@@ -83,6 +83,196 @@ export function createNodeExpr(o) {
   ].join('\n');
 }
 
+/**
+ * 尺寸决策的**纯算法**（页面内外共用同一份源码）。
+ *
+ *   measureTextFitExpr / fitNodeSizeExpr 生成的页面片段把它整段内联进去；
+ *   test/selftest.mjs 用 new Function(FIT_ALGO_SRC) 离线跑**同一份源码**。
+ *   一份源码、两个执行环境 —— 不会出现「测试算的和线上算的不一样」。
+ *
+ * 硬规矩：**只缩不放**。
+ *   newW = min(curW, max(minW, needW))
+ *   注意是 min(...) 套在**外面**：minW 只在 curW 比它更宽时才起作用，
+ *   所以即便 minW=110 而节点只有 100 宽，也绝不会被「撑」到 110。
+ *   理由：加宽会压到邻接图元/连线；这条能力只负责收窄。
+ */
+export const FIT_ALGO_SRC = [
+  '  function fitWrapLines(ws, availW) {',
+  '    var n = 0;',
+  '    for (var i = 0; i < ws.length; i++) {',
+  '      var w = ws[i] > 0 ? ws[i] : 0;',
+  '      n += Math.max(1, Math.ceil(w / availW));',
+  '    }',
+  '    return n;',
+  '  }',
+  '  function fitMeasure(m, o) {',
+  '    var pad = (o.padding == null) ? 16 : o.padding;',
+  '    var minW = (o.minW == null) ? 110 : o.minW;',
+  '    var minH = (o.minH == null) ? 0 : o.minH;',
+  '    var lineH = (o.fontSize || 13) * (o.lineRate || 1.25);',
+  '    var availW = (m.availW > 0) ? m.availW : Math.max(1, m.curW - 20);',
+  '    var wrapLines = fitWrapLines(m.lines, availW);',
+  '    var needW = Math.ceil(m.maxLineW) + pad * 2;',
+  '    var needH = Math.ceil(wrapLines * lineH) + 24;',
+  '    var newW = Math.round(Math.min(m.curW, Math.max(minW, needW)));',
+  '    var newH = Math.round(Math.min(m.curH, Math.max(minH, needH)));',
+  '    return {',
+  '      needW: needW, needH: needH, newW: newW, newH: newH,',
+  '      wrapLines: wrapLines, availW: availW, lineH: lineH,',
+  '      dw: Math.round(newW - m.curW), dh: Math.round(newH - m.curH),',
+  '      widthSaved: Math.max(0, Math.round(m.curW - newW)),',
+  '      changed: newW !== Math.round(m.curW) || newH !== Math.round(m.curH)',
+  '    };',
+  '  }',
+].join('\n');
+
+/** 量文字用的字体：与实测 DOM 一致（13px / 微软雅黑 / 行高 125%）。 */
+export const SIZE_FONT = "13px 'Microsoft YaHei', 微软雅黑, Arial";
+
+/** 定宽的默认参数。padding=16 意味着 W = 文字宽 + 32；minW=110 是经验下限。 */
+const SIZE_OPTS = {
+  font: SIZE_FONT,
+  fontSize: 13,      // 与 createPool 的默认 fontSize 一致
+  lineRate: 1.25,    // 真实 DOM 的 line-height:125%
+  padding: 16,       // 左右各 16 -> needW = ceil(maxLineW) + 32
+  minW: 110,         // 再窄文字就贴边了
+  minH: 0,           // 高度默认不设下限（只缩不放，不会撑大）
+  textInset: 20,     // 渲染器 textBlock 是 w-20 / x:10，可用文字宽 = w - 20
+  prefix: 'ai_',     // ids 省略时按这个前缀扫全页
+  includeStructural: false, // 默认跳过 pool / lane / linker（结构件不参与定宽）
+};
+
+function sizeOpts(opts) {
+  const o = Object.assign({}, SIZE_OPTS, opts || {});
+  // 只收数字，防止调用方传字符串把算法带偏
+  for (const k of ['fontSize', 'lineRate', 'padding', 'minW', 'minH', 'textInset']) {
+    if (typeof o[k] !== 'number' || !isFinite(o[k])) o[k] = SIZE_OPTS[k];
+  }
+  if (typeof o.font !== 'string' || !o.font) o.font = SIZE_FONT;
+  if (typeof o.prefix !== 'string') o.prefix = SIZE_OPTS.prefix;
+  return o;
+}
+
+/** 页面侧共用主干：扫描 -> canvas 量文字 -> fitMeasure -> 可选写回。 */
+function sizeExpr(ids, opts, write) {
+  const o = sizeOpts(opts);
+  const idsJson = JSON.stringify(ids === undefined ? null : ids);
+  return [
+    '(function(ids, o, write){',
+    "  if (typeof window.POBridge !== 'object') return JSON.stringify({error:'NO_BRIDGE'});",
+    '  var E = window.Model && window.Model.define && window.Model.define.elements;',
+    "  if (!E) return JSON.stringify({error:'NO_MODEL'});",
+    '  var NL = String.fromCharCode(10);',
+    '  var list;',
+    '  if (Array.isArray(ids)) list = ids.slice();',
+    '  else if (ids && ids.id) list = [ids.id];',
+    '  else { list = []; for (var q in E) { if (!o.prefix || q.indexOf(o.prefix) === 0) list.push(q); } }',
+    "  if (!list.length) return JSON.stringify({error:'EMPTY_IDS'});",
+    '  var cv = document.createElement("canvas");',
+    '  var ctx = cv.getContext("2d");',
+    "  if (!ctx) return JSON.stringify({error:'NO_CANVAS'});",
+    '  ctx.font = o.font;',
+    FIT_ALGO_SRC,
+    '  var items = [], msgs = [], skipped = 0, changed = 0, unchanged = 0;',
+    '  var savedPx = 0, savedH = 0, totalCurW = 0, totalNeedW = 0;',
+    '  for (var i = 0; i < list.length; i++) {',
+    '    var id = list[i], el = E[id];',
+    '    if (!el || !el.props) { skipped++; continue; }',
+    '    if (!o.includeStructural && /pool|lane|linker/i.test(el.name || "")) { skipped++; continue; }',
+    '    var p = el.props, curW = Math.round(p.w), curH = Math.round(p.h);',
+    '    if (!(curW > 0) || !(curH > 0)) { skipped++; continue; }',
+    '    var tb = el.textBlock || [], raw = [];',
+    '    for (var j = 0; j < tb.length; j++) raw.push(String((tb[j] && tb[j].text) || ""));',
+    '    var text = raw.join(NL);',
+    '    var lines = text.length ? text.split(NL) : [""];',
+    '    var ws = [], maxLineW = 0;',
+    '    for (var k = 0; k < lines.length; k++) {',
+    '      var lw = ctx.measureText(lines[k]).width;',
+    '      ws.push(Math.round(lw * 100) / 100);',
+    '      if (lw > maxLineW) maxLineW = lw;',
+    '    }',
+    '    var plan = fitMeasure({ curW: curW, curH: curH, maxLineW: maxLineW, lines: ws,',
+    '      availW: Math.max(1, curW - o.textInset) }, o);',
+    '    totalCurW += curW;',
+    '    totalNeedW += plan.needW;',
+    '    var rec = { id: id, text: text.slice(0, 24),',
+    '      curW: curW, curH: curH, needW: plan.needW, needH: plan.needH,',
+    '      newW: plan.newW, newH: plan.newH,',
+    '      maxLineW: Math.round(maxLineW), lines: ws.length, wrapLines: plan.wrapLines,',
+    '      savedW: plan.widthSaved, savedH: plan.dh < 0 ? -plan.dh : 0 };',
+    '    if (plan.changed) {',
+    '      changed++;',
+    '      savedPx += plan.widthSaved;',
+    '      savedH += rec.savedH;',
+    '      if (write) {',
+    '        var copy = JSON.parse(JSON.stringify(el));',
+    '        copy.props.w = plan.newW;',
+    '        copy.props.h = plan.newH;',
+    '        msgs.push({action:"update", content:{shapes:[copy], updates:[copy]}});',
+    '      }',
+    '    } else { unchanged++; }',
+    '    items.push(rec);',
+    '  }',
+    '  var writeError = null;',
+    '  if (write && msgs.length) {',
+    '    try { window.MessageSource.executeMessages(msgs, true); }',
+    '    catch (e) { writeError = String((e && e.message) || e); }',
+    '  }',
+    '  if (write && !writeError) {',
+    '    for (var t = 0; t < items.length; t++) {',
+    '      var cur = E[items[t].id];',
+    '      if (!cur || !cur.props) continue;',
+    '      items[t].actualW = Math.round(cur.props.w);',
+    '      items[t].actualH = Math.round(cur.props.h);',
+    '      items[t].applied = items[t].actualW === items[t].newW && items[t].actualH === items[t].newH;',
+    '    }',
+    '  }',
+    '  return JSON.stringify({',
+    '    mode: write ? "fit" : "measure",',
+    '    checked: items.length, changed: changed, unchanged: unchanged, skipped: skipped,',
+    '    savedPx: savedPx, savedH: savedH,',
+    '    totalCurW: totalCurW, totalNeedW: totalNeedW,',
+    '    ratio: totalCurW > 0 ? Math.round(savedPx / totalCurW * 1000) / 1000 : 0,',
+    '    executed: msgs.length, writeError: writeError,',
+    '    opts: {font: o.font, padding: o.padding, minW: o.minW, minH: o.minH, textInset: o.textInset},',
+    '    items: items',
+    '  });',
+    '})(' + idsJson + ', ' + JSON.stringify(o) + ', ' + (write ? 'true' : 'false') + ')',
+  ].join('\n');
+}
+
+/**
+ * ① 只读：按 canvas measureText 精确量出每个节点「文字需要多宽」。
+ *
+ * 返回 {mode:'measure', checked, changed, unchanged, skipped, savedPx, savedH,
+ *       totalCurW, totalNeedW, ratio, items:[{id,text,curW,curH,needW,needH,
+ *       newW,newH,maxLineW,lines,wrapLines,savedW,savedH}]}
+ *
+ * 用法：
+ *   measureTextFitExpr(['ai_node_1','ai_node_2'])   // 指定节点
+ *   measureTextFitExpr()                             // 扫全页 ai_ 前缀
+ *   measureTextFitExpr(null, {prefix:'ai_', minW:110})
+ *
+ * ⚠️ 这里是**测量定宽**，不是判断溢出：判断溢出要读渲染后真实 DOM 的
+ * scrollHeight vs clientHeight（见 SKILL.md）。两者目的不同，别混。
+ */
+export function measureTextFitExpr(ids, opts) {
+  return sizeExpr(ids, opts, false);
+}
+
+/**
+ * ② 写：批量收紧到文字宽度（只缩不放）。
+ *
+ * 走 MessageSource.executeMessages([{action:"update", content:{shapes:[c],
+ * updates:[c]}}], true) —— 只改 Model 画布不会重绘，这是本技能的老结论。
+ *
+ * 返回 {mode:'fit', changed, skipped, unchanged, savedPx, executed, items:[...]}
+ * changed=0 表示「都在合理宽度内」，不是失败。
+ */
+export function fitNodeSizeExpr(ids, opts) {
+  return sizeExpr(ids, opts, true);
+}
+
 /** 连线。 */
 export function createEdgeExpr(o) {
   return [

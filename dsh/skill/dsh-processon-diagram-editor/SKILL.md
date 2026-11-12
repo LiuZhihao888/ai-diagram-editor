@@ -15,10 +15,11 @@ description: "在用户已打开的 ProcessOn 画布上做 AI 增量改图。读
 - 读取现有泳道图 / 流程图结构（节点、连线、泳道、文字）
 - 创建 / 修改 / 删除节点与连线，改动红色高亮
 - 泳道池行数控制：`getPoolRows` / `createPool` / `setPoolRows` / `removePoolExpr`（见第五节）
+- 节点宽度自适应：`measureTextFitExpr` / `fitNodeSizeExpr` —— canvas `measureText` 精确量文字后定宽，只缩不放（见五之三）
 - 多标签场景精确定位目标图、视口跳转不打扰用户
 
 > 页面侧 JS 片段全部集中在本技能目录的 `lib/page.mjs`。**不要现场手写 JS** —— 用那里的函数，参数走 `JSON.stringify`。
-> 离线自检：`node test/selftest.mjs`（94 项）+ `node test/parity.mjs` + `node test/verify-pool.mjs`（33 项）—— 都不需要浏览器、不碰画布，本技能自带。
+> 离线自检：`node test/selftest.mjs`（100 项）+ `node test/parity.mjs` + `node test/verify-pool.mjs`（33 项）—— 都不需要浏览器、不碰画布，本技能自带。
 
 ---
 
@@ -406,7 +407,7 @@ var g = POBridge.getPoolRows('ai_pool_<时间戳>');
 ```bash
 cd dsh/skill/dsh-processon-diagram-editor
 node test/verify-pool.mjs      # 33 项：片段语法/转义 + 假运行时源码↔产物 parity + 真实字段不变量 + 边界守卫
-node test/selftest.mjs         # 94 项：片段/转义/守卫/自包含/书签版本/池片段/侧栏卡/验收判定
+node test/selftest.mjs         # 100 项：片段/转义/守卫/自包含/书签版本/池片段/侧栏卡/文字定宽/验收判定
 node test/parity.mjs           # 源码与压缩产物行为一致（含泳道池断言）
 node ../../../bridge/build.mjs --check   # 产物未漂移（在 bridge/ 下运行亦可）
 ```
@@ -632,15 +633,90 @@ POBridge.detectCrossings('ai_').crossings   // 0  不能穿过节点
 4. 完全不改 y —— 泳道归属不变
 ```
 
-离线纯算法测试在 `test/selftest.mjs`（8 项），覆盖：补齐差值、已够不动、
+离线纯算法测试在 `test/selftest.mjs`，间距算法专项 8 项，覆盖：补齐差值、已够不动、
 逐级累加、跨行独立、只增不减、降级、单节点行。
+（「文字定宽」算法另有 18 项，见下一节。）
 
-### 文字会不会挤出框？不会，别改节点宽度
+### 节点宽度：创建时按 measureText 定宽，别拍脑袋给 175–195px
 
-**实测**：17 个节点真实 DOM 渲染，**0 溢出**。文字会自动换行且高度自适应。
+这一节有两个**方向相反**的结论，混起来用就会得出假结论。先把目的分清：
 
-反面教训：按「字数 x 字号」估算宽度来判断溢出是**错的**，会得出「15/36 溢出」的假结论，
-然后去加宽节点 —— 白改。**要测就读真实 DOM 的 `scrollHeight vs clientHeight`。**
+| 场景 | 目的 | 怎么量 | 允许的动作 |
+|---|---|---|---|
+| **创建期**（还没画上去） | 定「该给多宽」 | canvas `measureText` 精确量文字 | 按需要**定宽** |
+| **渲染后**（已经画上去了） | 判断「有没有溢出」 | 真实 DOM 的 `scrollHeight vs clientHeight` | **不要改宽度** |
+
+**渲染后不会溢出**：实测 17 个节点真实 DOM，**0 溢出** —— 文字会自动换行、高度自适应。
+所以「看起来字要挤出来了」不是加宽的理由。
+
+**但创建期必须自己算宽度。** 实测事故：一次落图 248 个图元、总宽 2540px，
+用 canvas `measureText` 精确复测后发现 **90 个节点的矩形比文字实际需要的宽度多出 70–90px**，
+纯收窄就能省下 2133px 横向空间。根因就是创建时凭感觉给了 175–195px 的宽矩形 —— 画出来一片空白。
+
+反面教训（保留）：按「字数 x 字号」**估算**宽度是错的，会得出「15/36 溢出」的假结论。
+**要精确，就用 canvas `measureText`；要判断渲染后溢出，就读真实 DOM。估算这条路两头都不通。**
+
+### 默认值规范表（创建时就按这个给）
+
+用 `measureTextFitExpr` 量出文字宽度后再定尺寸，不要凭感觉：
+
+| 图元形态 | 推荐宽度 W | 下限 |
+|---|---|---|
+| 单行节点 | `measureText(该行) + 32` | 110 |
+| 多行节点 | `measureText(最长那一行) + 32` | 110 |
+| 泳道表头列宽 | `measureText(最长泳道名) + 32` | 140 |
+| 说明卡（侧栏） | 固定 280（见「五之五」） | — |
+
+> `+ 32` = 左右各 16px padding。高度按 `行数 x 13 x 1.25 + 24` 算
+> （13px 字号、行高 125% 来自真实 DOM，24 是上下留白）。
+
+### 两个一等公民 API
+
+`lib/page.mjs` 里的函数，交给 `browser_evaluate` 执行（**不要现场手写 JS**）：
+
+| 函数 | 作用 | 写画布？ |
+|---|---|---|
+| `measureTextFitExpr(ids, opts?)` | 只读：量出每个节点的 `{id, curW, needW, curH, needH, newW, newH, ...}` | **否** |
+| `fitNodeSizeExpr(ids, opts?)` | 批量收紧到文字宽度，**只缩不放** | 是 |
+
+`opts` 默认值：`{padding:16, minW:110, minH:0, font:'13px "Microsoft YaHei", 微软雅黑, Arial'}`。
+`ids` 传 `null`/`undefined` 时按 `opts.prefix`（默认 `'ai_'`）扫全页；
+`pool`/`lane`/`linker` 结构件默认跳过（`includeStructural:true` 可打开）。
+
+```js
+import { measureTextFitExpr, fitNodeSizeExpr } from './lib/page.mjs';
+
+// ① 落图前定宽：先量，再按 newW 去 createNode
+const m = JSON.parse(await browser_evaluate(measureTextFitExpr(['draft_node_a', 'draft_node_b'])));
+// -> {mode:'measure', checked:2, changed:2, skipped:0, savedPx:170, ratio:0.29,
+//     items:[{id:'draft_node_a', curW:195, needW:112, newW:112, curH:60, needH:41, ...}]}
+// 按 items[i].newW 创建，别用 175~195 这种拍脑袋值
+
+// ② 已经画歪了：批量收紧（只缩不放，不会压到邻接图元/连线）
+const f = JSON.parse(await browser_evaluate(fitNodeSizeExpr(null, { prefix: 'ai_', minW: 110 })));
+// -> {mode:'fit', checked:90, changed:90, savedPx:2133, executed:90, items:[...]}
+```
+
+**为什么「只缩不放」是硬规矩**：`newW = min(curW, max(minW, needW))` —— `min` 套在**最外层**。
+即便 `minW=110` 而节点只有 100 宽，也**绝不会**被撑到 110。加宽会压到邻接图元和连线，
+这条能力只负责收窄。**需要加宽请显式调 `updateNode`，不要指望这个 API 顺手帮你撑大。**
+
+**改尺寸必须走 `MessageSource.executeMessages`**（`fitNodeSizeExpr` 内部已经是
+`[{action:"update", content:{shapes:[c], updates:[c]}}], true`）——只改 `Model` 画布不重绘，
+这是本技能的老结论（见「八个坑」第一行）。
+
+### 落图后自检：savedPx 见真章
+
+```js
+const r = JSON.parse(await browser_evaluate(measureTextFitExpr(null, { prefix: 'ai_' })));
+// r.savedPx = 若是「按文字定宽」应该省下的像素总量
+// r.ratio   = savedPx / totalCurW
+```
+
+**判定：`ratio > 0.15` 说明创建时尺寸给大了** —— 横向空间有 15% 以上是纯空白，
+应重排而不是收工。实测那次 248 图元的落图 `ratio` 是 `2133/2540 ≈ 0.84`，属于必须返工的级别。
+
+> 注意：`measureTextFitExpr` 是**只读**的，跑它不会动画布，可以放心在验收阶段全量跑一遍。
 
 ---
 
@@ -813,6 +889,10 @@ auditLayoutExpr('ai_', 9)   // 第二个参数是页索引，必须有
 
 返回值里还有 `pass` 字段，是这六项的合成判定。**看 `pass` 就够，但出问题时要看具体字段定位。**
 
+> 上面六项管的是「排布对不对」。**尺寸给得对不对是另一件事**，用
+> `measureTextFitExpr` 单独量（只读、不写画布）：`ratio > 0.15` 说明节点普遍偏宽，
+> 详见「五之三 · 落图后自检」。六项全过 ≠ 尺寸合理 —— 一堆宽矩形也能六项全过。
+
 ### 阈值的由来（别凭感觉改）
 
 这些数字集中在 `bridge/pobridge.js` 的 `LAYOUT` 常量里，改之前先读这段注释：
@@ -892,7 +972,7 @@ node tools/sync-skill.mjs          # 执行（自动备份 + 更新版本号 + �
 `_meta.json` 的 `version` 形如 `0.2.510473`，第三段是**内容哈希**派生的数字。
 
 **为什么要这样**：历史上两边 `_meta.json` 都写着 `0.2.0`，但内容差了 4 天
-（SKILL.md 24KB vs 40KB，测试 36 项 vs 94 项）。光看版本号根本发现不了不同。
+（SKILL.md 24KB vs 40KB，测试 36 项 vs 100 项）。光看版本号根本发现不了不同。
 现在内容一变、版本号就变，`diff` 一眼可见。
 
 同步时会写入三个字段：
@@ -914,8 +994,8 @@ node tools/sync-skill.mjs          # 执行（自动备份 + 更新版本号 + �
 
 | 布局 | selftest | verify-pool |
 |---|---|---|
-| 仓库（`dsh/skill/...`） | **94 项全过** | **33 项全过** |
-| 独立安装（`~/.dsh/skills/...`） | 82 过 + 12 跳过 | 32 过 + 1 跳过 |
+| 仓库（`dsh/skill/...`） | **100 项全过** | **33 项全过** |
+| 独立安装（`~/.dsh/skills/...`） | 100 过 + 12 跳过 | 32 过 + 1 跳过 |
 
 跳到的那 12 项都是「源码里有没有某个常量/导出」这类断言 —— 独立安装时无从校验，跳过是对的。
 **如果你在安装布局看到 12 项 skip，那不是坏了。**
@@ -1021,7 +1101,7 @@ node tools/sync-skill.mjs          # 默认目标 ~/.dsh/skills/dsh-processon-di
 node tools/sync-skill.mjs --dry    # 只看会改哪些文件，不落盘
 node tools/sync-skill.mjs --target <path>   # 自定义目标
 
-node test/selftest.mjs             # 94 项离线断言
+node test/selftest.mjs             # 100 项离线断言
 node test/verify-pool.mjs          # 33 项泳道池行数能力
 node test/parity.mjs               # 两个产物行为一致
 ```

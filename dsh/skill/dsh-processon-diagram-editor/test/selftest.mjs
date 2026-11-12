@@ -114,6 +114,140 @@ ok('existsExpr 可用于超时后探测', () => {
   assert.match(js, /Model\.define\.elements/);
 });
 
+// ---------------------------------------------------------------- [4.5] 文字定宽 measureTextFit / fitNodeSize
+// 这一节跑的是**页面里那段真源码**（P.FIT_ALGO_SRC 被原样内联进两个表达式），
+// 所以离线断言和线上行为不会分叉。
+const fitAlgo = new Function(P.FIT_ALGO_SRC + ' return { fitMeasure: fitMeasure, fitWrapLines: fitWrapLines };')();
+/**
+ * 造一个测量结果喂给算法。
+ * widths 是每行的文字像素宽（模拟 canvas measureText 的输出），不是字数。
+ */
+const fitPlan = (curW, curH, widths, opts) => fitAlgo.fitMeasure({
+  curW: curW,
+  curH: curH,
+  maxLineW: Math.max.apply(null, widths),
+  lines: widths,
+  availW: Math.max(1, curW - ((opts && opts.textInset) || 20)),
+}, Object.assign({ padding: 16, minW: 110, minH: 0 }, opts || {}));
+
+for (const name of ['measureTextFitExpr', 'fitNodeSizeExpr']) {
+  ok('尺寸片段可编译: ' + name, () => syntaxOk(P[name](['ai_a', 'ai_b'])));
+  ok('尺寸片段带 NO_BRIDGE 守卫: ' + name, () => {
+    assert.match(P[name](['ai_a']), /NO_BRIDGE/);
+  });
+}
+
+ok('尺寸片段用 canvas measureText 精确量，不用「字数 x 字号」估算', () => {
+  const js = P.measureTextFitExpr(['ai_a']);
+  assert.match(js, /getContext\("2d"\)/, '必须用 canvas 2d 上下文');
+  assert.match(js, /ctx\.measureText\(/, '必须逐行调用 measureText');
+  assert.match(js, /Microsoft YaHei/, '字体必须是实测用的微软雅黑 13px');
+  // 估算式（长度乘字号）一旦出现就是回到了那条被证伪的老路
+  assert.doesNotMatch(js, /\.length\s*\*\s*1?[0-9]/, '出现「字数 x 字号」估算');
+});
+
+ok('measureTextFitExpr 只读、fitNodeSizeExpr 才写', () => {
+  // 两个表达式共用主干，靠末尾的 write 布尔开关区分，写死才不会串
+  assert.match(P.measureTextFitExpr(['ai_a']), /, false\)$/);
+  assert.match(P.fitNodeSizeExpr(['ai_a']), /, true\)$/);
+  assert.match(P.fitNodeSizeExpr(['ai_a']), /executeMessages/);
+});
+
+ok('尺寸片段与 selftest 跑的是同一份算法源码（FIT_ALGO_SRC 被内联）', () => {
+  for (const name of ['measureTextFitExpr', 'fitNodeSizeExpr']) {
+    assert.ok(P[name](['ai_a']).includes('function fitMeasure(m, o)'), name + ' 没有内联 FIT_ALGO_SRC');
+  }
+});
+
+ok('只缩不放：newW 绝不大于 curW', () => {
+  // 文字比框宽 -> 需要更宽，但这条能力只负责收窄，必须保持原宽
+  const p = fitPlan(140, 80, [400]);
+  assert.equal(p.newW, 140, '文字超出时不许加宽');
+  assert.equal(p.dw, 0);
+  assert.equal(p.widthSaved, 0);
+  // 文字窄 -> 收窄
+  const q = fitPlan(300, 80, [60]);
+  assert.ok(q.newW <= 300, '收窄后不能比原来宽');
+  assert.ok(q.widthSaved > 0, '应该真的收窄了');
+});
+
+ok('只缩不放：minW 比 curW 还大时也不撑宽', () => {
+  // 100 宽的节点 + minW=110：如果写成 max(minW, needW) 直接取值就会撑到 110
+  const p = fitPlan(100, 60, [30], { minW: 110, padding: 16 });
+  assert.equal(p.newW, 100, 'minW 不能把节点撑大');
+  assert.equal(p.dw, 0);
+});
+
+ok('minW 生效：文字很窄时收到 minW 而不是继续缩', () => {
+  const p = fitPlan(300, 60, [40], { minW: 110, padding: 16 });
+  assert.equal(p.needW, 40 + 32, 'needW = 文字宽 + padding*2');
+  assert.equal(p.newW, 110, 'needW 小于 minW 时取下限 110');
+  const q = fitPlan(300, 60, [40], { minW: 140, padding: 16 });
+  assert.equal(q.newW, 140, 'minW 可配置');
+});
+
+ok('多行取最长行：needW 由最长的一行决定', () => {
+  const p = fitPlan(400, 120, [40, 180, 60]);
+  assert.equal(p.needW, 180 + 32, 'needW 应取最长行 180');
+  assert.equal(p.newW, 212);
+  // 反过来：最长行在中间、末尾很短，也不能按最后一行算
+  const q = fitPlan(400, 120, [200, 30]);
+  assert.equal(q.needW, 200 + 32);
+});
+
+ok('多行取最长行：padding 参与计算（needW = ceil(maxLineW) + padding*2）', () => {
+  const p = fitPlan(400, 120, [180], { padding: 24 });
+  assert.equal(p.needW, 180 + 48);
+  const q = fitPlan(400, 120, [180], { padding: 0 });
+  assert.equal(q.needW, 180);
+});
+
+ok('高度：needH = ceil(行数 x 13 x 1.25) + 24', () => {
+  const one = fitPlan(400, 120, [100]);
+  assert.equal(one.needH, Math.ceil(1 * 13 * 1.25) + 24, '单行 needH');
+  const three = fitPlan(400, 120, [100, 100, 100]);
+  assert.equal(three.needH, Math.ceil(3 * 13 * 1.25) + 24, '三行 needH');
+  // 只缩不放：原高比 needH 矮时不加高
+  const short = fitPlan(400, 20, [100, 100, 100]);
+  assert.equal(short.newH, 20, '高度也不许撑大');
+});
+
+ok('换行计入行高：文字超出可用宽度时按换行后的行数算高', () => {
+  // 框宽 140 -> 可用 120，一行 300px 的文字会被折成 3 行
+  const p = fitPlan(140, 120, [300]);
+  assert.equal(p.wrapLines, 3, '300/120 向上取整为 3 行');
+  assert.equal(p.needH, Math.ceil(3 * 13 * 1.25) + 24);
+  assert.equal(p.newW, 140, '折行说明当前宽度装得下，不该再收窄');
+});
+
+ok('尺寸算法不带 minH 时高度下限为 0，传了才生效', () => {
+  const p = fitPlan(400, 300, [100], { minH: 200 });
+  assert.equal(p.newH, 200, 'minH 应把结果抬到 200');
+  const q = fitPlan(400, 300, [100]);
+  assert.equal(q.newH, Math.ceil(13 * 1.25) + 24, '默认 minH=0，按文字算');
+});
+
+ok('ids 省略时按 prefix 扫全页；结构件默认跳过', () => {
+  const e = P.measureTextFitExpr();
+  assert.match(e, /o\.prefix/, '应有 prefix 扫描分支');
+  assert.match(e, /pool\|lane\|linker/, '应跳过 pool/lane/linker');
+  assert.match(e, /includeStructural/, '应可通过 includeStructural 打开');
+  syntaxOk(e);
+});
+
+ok('尺寸片段给出自检字段 changed/skipped/savedPx/ratio', () => {
+  const js = P.fitNodeSizeExpr(['ai_a']);
+  for (const k of ['changed', 'skipped', 'unchanged', 'savedPx', 'savedH', 'ratio', 'items']) {
+    assert.ok(js.includes(k), '缺字段: ' + k);
+  }
+  assert.match(js, /totalCurW/, 'ratio 的分母要能自证');
+});
+
+ok('尺寸片段拒绝空 id 数组', () => {
+  assert.match(P.fitNodeSizeExpr([]), /EMPTY_IDS/);
+});
+
+
 // ---------------------------------------------------------------- [5] 技能包自洽
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SKILL = path.resolve(HERE, '..');   // test/ 的上一级就是技能根
