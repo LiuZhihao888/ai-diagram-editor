@@ -229,6 +229,17 @@ const MUTATIONS = [
     },
   },
   {
+    // 【为什么要这条】断言名叫"必须真的被 applied"，但正文只验了 handled>=1。
+    // 构造"把每条边都塞进 skipped、永不 applied"的彻底放弃重路由实现，原断言全绿。
+    label: 'bridge: rerouteWorstEdges 永不 applied（全塞 skipped）',
+    file: MIN,
+    mutate(s) {
+      const re = /try\{fe\(l,h\.channelY\),i\.push\(\{edge:l,before:o\[l\],channelY:h\.channelY\}\)\}/;
+      if (!re.test(s)) return null;
+      return s.replace(re, 'try{fe(l,h.channelY),s.push({edge:l,reason:"never applied"})}');
+    },
+  },
+  {
     label: 'bridge: 斜线裁剪循环不执行（L<4 → L<0）',
     file: MIN,
     mutate(s) {

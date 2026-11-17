@@ -1440,7 +1440,7 @@ node test/mutation.mjs    # 测试本身还有没有用
    （典型原因：源码改了，硬编码的特征串失配）。
 3. **按语义定位** —— 不硬编码压缩后的变量名，重新构建就不失配。
 
-当前 19/19 全抓到，正向对照通过。
+当前 20/20 全抓到，正向对照通过。
 
 ### 验收判定的六个判据
 
@@ -1479,15 +1479,20 @@ node test/mutation.mjs    # 测试本身还有没有用
 
 ### 🔴 零行为覆盖的导出（诚实清单）
 
-`POBridge` 有 **30** 个导出。第七轮核验实测：**selftest 真的调了 8 个**，其余只有字符串或漂移探针。
+`POBridge` 有 **30** 个导出。第八轮核验实测：**selftest 真的调了 9 个**，其余只有字符串或漂移探针。
 
 | 状态 | 数量 | 函数 |
 |---|---|---|
 | ✅ selftest 真调（vm 沙箱执行） | **9** | `ANCHOR` `LAYOUT` `auditSideCard` `clampIntoView` `computeEdgeGeometry` `detectCrossings` `reflowSpacing` `rerouteEdge` `rerouteWorstEdges` |
 | ⚠️ 只有 `parity.mjs` 漂移探针 | 10 | `createNode` `readGraph` `updateNode` `createEdge` `removeNodes` `createPool` `setPoolRows` `getPoolRows` `focusRect` `getViewBox` |
-| ❌ 零行为覆盖 | 11 | `RED` `auditSideCard` `autoRouteAround` `createSideCard` `detectOverlaps` `listEdges` `polishLayout` `rebindEdge` `rebindEdges` `resetBrokenLinkers` `routeAround` `suggestChannel` |
+| ❌ 零行为覆盖 | 11 | `RED` `autoRouteAround` `createSideCard` `detectOverlaps` `listEdges` `polishLayout` `rebindEdge` `rebindEdges` `resetBrokenLinkers` `routeAround` `suggestChannel` |
 
-合计 8 + 10 + 12 = 30，账对得上。
+合计 **9 + 10 + 11 = 30**，账对得上。
+
+> 🔴 **这张表被核验抓住过两次同类错误**：先是 `computeEdgeGeometry` 同时躺在 ✅ 和 ❌ 两栏，
+> 修完又轮到 `auditSideCard`；而且合计数 `8+10+12=30` 与 `9+10+11=30` **碰巧都是 30**，
+> 只看合计发现不了，必须逐项比对名字。
+> **教训：文档账没有自动校验，必须像查代码一样逐项核对，不能只看总数。**
 
 **必须说清楚**：`parity.mjs` 是「两个产物是否一致」的**漂移检测器**，不是正确性检测器。
 两个产物同步变坏时它完全无感。**不能当正确性覆盖来宣传。**

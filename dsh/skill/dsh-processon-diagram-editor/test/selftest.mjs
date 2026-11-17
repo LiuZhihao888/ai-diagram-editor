@@ -1407,10 +1407,12 @@ ok('【行为】rerouteWorstEdges 有正向对照：该绕的边必须真的被 
   assert.ok(r.scanned >= 1, '应扫描到至少 1 条边，实际 ' + r.scanned);
   assert.ok((r.applied && r.applied.length) + (r.skipped && r.skipped.length) <= r.scanned,
     'applied + skipped 不应超过 scanned');
-  // 至少要有结论：要么绕了，要么因竖直段不安全跳过 —— 不能两者都空
-  const handled = (r.applied ? r.applied.length : 0) + (r.skipped ? r.skipped.length : 0);
-  assert.ok(handled >= 1,
-    '该边必须被处理（applied 或 skipped），不能空转。实际 ' + JSON.stringify(r));
+  // 【断言名承诺的是「必须真的被 applied」，就必须断言 applied >= 1】
+  // 只写 handled>=1 的话，一个"把每条边都塞进 skipped、永不 applied"的
+  // 彻底放弃重路由的实现，也能全绿 —— 第八轮核验实测证明了这一点。
+  assert.ok(r.applied.length >= 1,
+    '这条边水平段干净、竖直段不穿节点，必须被真的绕行（applied >= 1），不能只跳过。实际 ' +
+    JSON.stringify({ applied: r.applied, skipped: r.skipped, scanned: r.scanned }));
 });
 
 // ---------------------------------------------------------------- 汇总
