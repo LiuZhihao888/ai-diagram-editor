@@ -143,15 +143,33 @@
     var vb = global.Utils.canvasViewBox;
     var before = { scrollLeft: layout.scrollLeft, scrollTop: layout.scrollTop };
 
-    // 让目标矩形居中；ProcessOn 的 viewBox 已含 expand margin，直接用即可
-    var targetLeft = x + w / 2 - vb.w / 2;
-    var targetTop = y + h / 2 - vb.h / 2;
+    // 🔴 不能假设 viewBox.x === scrollLeft。
+    // 实测：viewBox 与 scrollLeft 差一个常量偏移，且该偏移随 zoom 变化
+    //（zoom=1 时 ΔviewBox = Δscroll；zoom=0.5 时 ΔviewBox = 2×Δscroll）。
+    // 所以这里做**探针校准**：挪一小步，量出真实的比例与偏移，再算目标滚动量。
+    var probeDx = 120, probeDy = 120;
+    var vb0 = { x: vb.x, y: vb.y };
+    layout.scrollLeft = before.scrollLeft + probeDx;
+    layout.scrollTop = before.scrollTop + probeDy;
+    try { global.Utils.canvasViewBoxUpdate(); } catch (e) {}
+    var vb1 = global.Utils.canvasViewBox;
+
+    var sx = (vb1.x - vb0.x) / probeDx;   // viewBox 每单位 scroll 移动多少
+    var sy = (vb1.y - vb0.y) / probeDy;
+    // 比例异常（未更新/NaN）时退回 1:1
+    if (!isFinite(sx) || Math.abs(sx) < 1e-6) sx = 1;
+    if (!isFinite(sy) || Math.abs(sy) < 1e-6) sy = 1;
+
+    // vb0 对应 before.scroll，换算到目标中心
+    var wantX = x + w / 2 - vb.w / 2;
+    var wantY = y + h / 2 - vb.h / 2;
+    var targetLeft = before.scrollLeft + (wantX - vb0.x) / sx;
+    var targetTop = before.scrollTop + (wantY - vb0.y) / sy;
 
     layout.scrollLeft = targetLeft;
     layout.scrollTop = targetTop;
 
-    // 同步缓存，避免后续读坐标用旧 viewBox
-    try { global.Utils.canvasViewBoxUpdate(); } catch (e) { /* 只读刷新失败不影响滚动 */ }
+    try { global.Utils.canvasViewBoxUpdate(); } catch (e) {}
 
     var after = { scrollLeft: layout.scrollLeft, scrollTop: layout.scrollTop };
     return {
@@ -647,6 +665,28 @@
     return { id: edge.id, fromSide: geo.fromSide, toSide: geo.toSide, points: geo.points.length };
   }
 
+  // 按折线长度比例算出标签的绝对坐标（与 drawEdge 同一套算法）
+  function labelPointOnChain(fromPt, points, toPt, loc) {
+    var chain = [fromPt].concat(points || []).concat([toPt]);
+    var segs = [], total = 0;
+    for (var i = 0; i < chain.length - 1; i++) {
+      var dx = chain[i + 1].x - chain[i].x, dy = chain[i + 1].y - chain[i].y;
+      var len = Math.abs(dx) + Math.abs(dy);
+      segs.push({ x: chain[i].x, y: chain[i].y, dx: dx, dy: dy, len: len });
+      total += len;
+    }
+    if (!segs.length) return { x: fromPt.x, y: fromPt.y };
+    var target = total * (loc == null ? 0.5 : loc), acc = 0;
+    for (var j = 0; j < segs.length; j++) {
+      if (acc + segs[j].len >= target || j === segs.length - 1) {
+        var f = segs[j].len ? (target - acc) / segs[j].len : 0;
+        return { x: segs[j].x + segs[j].dx * f, y: segs[j].y + segs[j].dy * f };
+      }
+      acc += segs[j].len;
+    }
+    return { x: fromPt.x, y: fromPt.y };
+  }
+
   function applyGeo(e, geo) {
     var next = JSON.parse(JSON.stringify(e));
     next.from = { x: geo.from.x, y: geo.from.y, angle: geo.from.angle, id: e.from.id };
@@ -654,6 +694,16 @@
     next.points = geo.points;
     if (next.text && (!next.textBlock || !next.textBlock.length)) {
       next.textBlock = [{ location: 0.5, text: next.text }];
+    }
+    // 🔴 连线的文字标签是 textBlock[{location}] + textPos{t,x,y}，
+    // 几何变了必须同步 textPos，否则标签会停在旧坐标（实测偏差可达 110px）。
+    if (next.text) {
+      var loc = (next.textBlock && next.textBlock[0] && typeof next.textBlock[0].location === 'number')
+        ? next.textBlock[0].location : 0.5;
+      var lp = labelPointOnChain(
+        { x: geo.from.x, y: geo.from.y }, geo.points, { x: geo.to.x, y: geo.to.y }, loc);
+      next.textPos = { t: (next.textPos && next.textPos.t) || 28,
+        x: Math.round(lp.x), y: Math.round(lp.y) };
     }
     return next;
   }
@@ -1787,7 +1837,8 @@
     var o = opts || {};
     var lanes = o.lanes || [];
     var headerW = o.headerWidth || STYLE.poolHeaderW;
-    var laneH = STYLE.laneH;
+    var laneH = (typeof o.laneH === 'number' && isFinite(o.laneH) && o.laneH > 0)
+      ? o.laneH : STYLE.laneH;
     var width = o.width || 1200;
     var x = o.x, y = o.y;
 
@@ -1958,11 +2009,24 @@
     var lanes = sp.lanes || [];
     if (!lanes.length) throw new Error('drawDiagram 需要至少一条泳道');
 
+    // 防重复建池：若同前缀的池已存在，先清掉（否则会叠出第二套泳道）
+    var existEls = global.Model.define.elements;
+    if (existEls[prefix + 'pool']) {
+      var old = Object.keys(existEls).filter(function (id) {
+        return id.indexOf(prefix) === 0;
+      }).map(function (id) { return existEls[id]; }).filter(Boolean);
+      if (old.length) {
+        global.MessageSource.executeMessages([{ action: 'remove', content: old }], true);
+      }
+    }
+
     // 1) 池 + 泳道
     var poolInfo = buildPool({
       x: origin.x, y: origin.y,
       width: sp.width || 1200,
       lanes: lanes,
+      laneH: sp.laneH,              // 可选：覆盖泳道高（默认 200）
+      headerWidth: sp.headerWidth,  // 可选：覆盖表头宽（默认 84）
       idPrefix: prefix + 'lane_',
       id: prefix + 'pool'
     });
@@ -2010,6 +2074,50 @@
 
     return { prefix: prefix, pool: poolInfo, rows: rowInfo,
       nodes: allIds.length, edges: edgeResults.length, edgeResults: edgeResults };
+  }
+
+  // 验收：连线「数据 vs 渲染」一致性
+  // 解决一类隐蔽缺陷：数据全对（badAnchor=0）但 DOM 里的连线盒停在旧位置，
+  // 截图看到箭头扎进节点内部。纯数据审计查不出这个。
+  function auditEdgeRender(prefix) {
+    ensureRuntime();
+    var els = global.Model.define.elements;
+    var ids = Object.keys(els).filter(function (id) {
+      return els[id] && els[id].name === 'linker' && (!prefix || id.indexOf(prefix) === 0);
+    });
+    var bad = [], okCount = 0, noDom = [];
+    ids.forEach(function (id) {
+      var e = els[id];
+      var dom = document.getElementById(id);
+      if (!dom) { noDom.push(id); return; }
+      var rc = dom.getBoundingClientRect();
+      if (!rc || rc.width === 0) { noDom.push(id); return; }
+
+      // 数据侧：两端锚点 + 折点构成的包围盒（页面坐标）
+      var xs = [e.from.x, e.to.x].concat((e.points || []).map(function (q) { return q.x; }));
+      var ys = [e.from.y, e.to.y].concat((e.points || []).map(function (q) { return q.y; }));
+      var dW = Math.max.apply(null, xs) - Math.min.apply(null, xs);
+      var dH = Math.max.apply(null, ys) - Math.min.apply(null, ys);
+
+      // DOM 侧尺寸（换算回页面尺度）
+      var vb = global.Utils.canvasViewBox;
+      var scale = vb && vb.w ? (rc.width / Math.max(dW, 1)) : 1;
+      // 用长宽比判断是否严重不符（避免依赖 zoom 绝对值）
+      var ratioW = dW > 2 ? rc.width / dW : null;
+      var ratioH = dH > 2 ? rc.height / dH : null;
+      var suspicious = false;
+      if (ratioW != null && ratioH != null && ratioW > 0.5 && ratioH > 0.5) {
+        var r = ratioW / ratioH;
+        if (r > 2.2 || r < 0.45) suspicious = true;
+      }
+      if (suspicious) {
+        bad.push({ id: id, dataW: Math.round(dW), dataH: Math.round(dH),
+          domW: Math.round(rc.width), domH: Math.round(rc.height),
+          ratio: ratioW && ratioH ? Math.round((ratioW / ratioH) * 100) / 100 : null });
+      } else okCount++;
+    });
+    return { edges: ids.length, consistent: okCount, suspicious: bad.length,
+      noDom: noDom.length, list: bad.slice(0, 10), pass: bad.length === 0 && noDom.length === 0 };
   }
 
   // 保存并等待落库完成
@@ -2107,7 +2215,8 @@
     drawEdge: drawEdge,
     drawDiagram: drawDiagram,
     commit: commit,
-    saveAndVerify: saveAndVerify
+    saveAndVerify: saveAndVerify,
+    auditEdgeRender: auditEdgeRender
   };
 
   return global.POBridge;
