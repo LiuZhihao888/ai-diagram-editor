@@ -415,12 +415,17 @@ ok('书签产物含锚点能力', () => {
     assert.ok(dec.includes(k), '书签缺: ' + k);
   }
 });
-ok('angle 常量方向正确（L=0 T=PI/2 R=PI B=3PI/2）', () => {
+ok('angle 常量方向正确（实测：L=PI T=-PI/2 R=0 B=PI/2）', () => {
+  // 【实测校正】真机 155 个端点统计：L=π(58) / R=0(53) / B=π/2(22) / T=-π/2(22)。
+  // ProcessOn 的 angle 是「朝内的入射方向」，旧断言（L=0,R=PI）方向整体反了，
+  // 会让 computeEdgeGeometry 算出斜线 —— 这正是 11 条斜边的来源。
   const b = bridgeCode();
-  assert.match(b, /L:\s*0/);
-  assert.match(b, /T:\s*Math\.PI\s*\/\s*2/);
-  assert.match(b, /R:\s*Math\.PI[,\s]/);
-  assert.match(b, /B:\s*3\s*\*\s*Math\.PI\s*\/\s*2/);
+  assert.match(b, /L:\s*Math\.PI/, 'L 应为 PI');
+  assert.match(b, /R:\s*0/, 'R 应为 0');
+  assert.match(b, /T:\s*-\s*Math\.PI\s*\/\s*2/, 'T 应为 -PI/2');
+  assert.match(b, /B:\s*Math\.PI\s*\/\s*2/, 'B 应为 PI/2');
+  // 反向校验：不能同时存在旧的那套
+  assert.doesNotMatch(b, /ANCHOR\s*=\s*\{\s*L:\s*0,/, '不能退回旧的错误顺序');
 });
 
 
@@ -778,6 +783,45 @@ ok('SKILL.md 记录了两条 reroute 安全铁律', () => {
   assert.match(md, /端点必须留在节点边缘中点/);
   assert.match(md, /水平通道干净 ≠ 能绕/);
   assert.match(md, /7 是真的，0 是假的/, '应保留实测教训');
+});
+
+// ---------------------------------------------------------------- 核验后新增（P1/P4/P7）
+ok('detectCrossings 支持斜线段（Liang-Barsky）', () => {
+  const b = bridgeCode();
+  const i = b.indexOf('function segHitsRect');
+  const seg = b.slice(i, i + 1800);
+  assert.match(seg, /t0/, '缺裁剪参数 t0');
+  assert.match(seg, /t1/, '缺裁剪参数 t1');
+  assert.ok(!/^\s*return false;\s*$/m.test(seg.split('for (var i2')[0].slice(-200)), '不能在校验前就 return false');
+});
+ok('auditLayoutExpr 的 hitSeg 也支持斜线', () => {
+  const e = P.auditLayoutExpr('ai_');
+  assert.match(e, /t0/, '斜线段必须有裁剪');
+  assert.match(e, /t1/);
+});
+ok('auditLayoutExpr 有 emptyScope 守卫（防错前缀假通过）', () => {
+  const e = P.auditLayoutExpr('ai_');
+  assert.match(e, /emptyScope/, '必须检测空作用域');
+  assert.match(e, /emptyScope === 0|!emptyScope/, 'pass 必须受 emptyScope 约束');
+  assert.match(e, /reason/, '应给出不可信原因');
+});
+ok('build.mjs 用 Buffer.byteLength 算字节', () => {
+  const buildPath = path.resolve(SKILL, '..', '..', '..', 'bridge', 'build.mjs');
+  if (!fs.existsSync(buildPath)) throw new Error('SKIP_NO_BRIDGE_SRC');
+  const src = fs.readFileSync(buildPath, 'utf8');
+  assert.match(src, /Buffer\.byteLength/, '含中文时 string.length 会少算字节');
+  assert.ok(src.indexOf('bytes: rendered.get(t.format).length') < 0, '不能再用 .length');
+});
+ok('SKILL.md 记录了 angle 错误的教训', () => {
+  const md = fs.readFileSync(path.join(SKILL, 'SKILL.md'), 'utf8');
+  assert.match(md, /L=π/, '应写正确的 L=π');
+  assert.match(md, /方向整体相反|方向整体反了/, '应说明曾经反了');
+  assert.match(md, /坐标对了不代表线对了/, '应保留这条教训');
+});
+ok('SKILL.md 记录了试过但失败的思路', () => {
+  const md = fs.readFileSync(path.join(SKILL, 'SKILL.md'), 'utf8');
+  assert.match(md, /穿越数从 12 涨到 33/, '应记录失败尝试的真实数字');
+  assert.match(md, /动节点布局/, '应指出正确解法');
 });
 
 // ---------------------------------------------------------------- 汇总

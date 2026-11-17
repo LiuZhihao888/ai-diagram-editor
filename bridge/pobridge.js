@@ -318,7 +318,10 @@
   //   points 是「拐角表」，不是端点表：points[0] 通常是拐角 {x: to.x, y: from.y}。
   //   改完 points 必须触发 Designer.events.push('resetBrokenLinker')，
   //   否则渲染器不重算折线路径，画布上不更新。
-  var ANCHOR = { L: 0, T: Math.PI / 2, R: Math.PI, B: 3 * Math.PI / 2 };
+  // 【实测校正】ProcessOn 的 angle 表示「朝内的入射方向」，不是朝外法线。
+// 真机实测 155 个端点：L=π(58次) / R=0(53次) / B=π/2(22次) / T=-π/2(22次)。
+// 旧值（L:0,T:π/2,R:π,B:3π/2）方向整体反了，会让 computeEdgeGeometry 算出斜线。
+  var ANCHOR = { L: Math.PI, T: -Math.PI / 2, R: 0, B: Math.PI / 2 };
 
   function anchorPoints(p) {
     return {
@@ -975,8 +978,11 @@
       boxes.push({ id: id, x: el.props.x, y: el.props.y, w: el.props.w, h: el.props.h,
         text: String((el.textBlock && el.textBlock[0] && el.textBlock[0].text) || '').slice(0, 16) });
     }
+    // 【必须支持斜线】旧版只判断 `|Δy|<0.5` 或 `|Δx|<0.5`，斜线段直接 return false，
+    // 导致斜穿节点的连线完全不被发现。实测本画布 11 条斜线里 5 条穿节点，全部漏报。
     function segHitsRect(x1, y1, x2, y2, r) {
       var pad = 2, rx1 = r.x + pad, ry1 = r.y + pad, rx2 = r.x + r.w - pad, ry2 = r.y + r.h - pad;
+      // 水平/垂直走快路径（数值更稳）
       if (Math.abs(y1 - y2) < 0.5) {
         if (y1 < ry1 || y1 > ry2) return false;
         var a = Math.min(x1, x2), b = Math.max(x1, x2);
@@ -987,7 +993,21 @@
         var c = Math.min(y1, y2), d = Math.max(y1, y2);
         return d > ry1 && c < ry2;
       }
-      return false;
+      // 斜线：Liang-Barsky 线段裁剪
+      var dx = x2 - x1, dy = y2 - y1;
+      var t0 = 0, t1 = 1;
+      var p = [-dx, dx, -dy, dy];
+      var q = [x1 - rx1, rx2 - x1, y1 - ry1, ry2 - y1];
+      for (var i2 = 0; i2 < 4; i2++) {
+        if (Math.abs(p[i2]) < 1e-9) {
+          if (q[i2] < 0) return false;   // 平行且在界外
+        } else {
+          var rr = q[i2] / p[i2];
+          if (p[i2] < 0) { if (rr > t1) return false; if (rr > t0) t0 = rr; }
+          else { if (rr < t0) return false; if (rr < t1) t1 = rr; }
+        }
+      }
+      return t0 <= t1;
     }
     var viol = [];
     for (id in E) {

@@ -136,14 +136,14 @@ for (const t of TARGETS) {
   const p = path.join(ROOT, t.to);
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, rendered.get(t.format));
-  files[t.to] = { format: t.format, bytes: rendered.get(t.format).length, sha256: sha(rendered.get(t.format)) };
+  files[t.to] = { format: t.format, bytes: Buffer.byteLength(rendered.get(t.format), "utf8"), sha256: sha(rendered.get(t.format)) };
 }
 
 fs.mkdirSync(path.dirname(MANIFEST), { recursive: true });
 fs.writeFileSync(MANIFEST, JSON.stringify({
   source: 'bridge/pobridge.js',
   sourceSha256: sourceHash,
-  sourceBytes: source.length,
+  sourceBytes: Buffer.byteLength(source, "utf8"),
   builtAt: new Date().toISOString(),
   exports: ['RED', 'readGraph', 'createNode', 'updateNode', 'removeNodes', 'createEdge', 'getViewBox', 'clampIntoView', 'focusRect'],
   files,
