@@ -10,6 +10,102 @@ description: "在用户已打开的 ProcessOn 画布上做 AI 增量改图。读
 **这套是给 DeepSeek Harness 用的**。它依赖 DSH 浏览器扩展提供的 `browser_*` 工具；
 用 WorkBuddy 的同事请装 `wb-processon-diagram-editor`，那套自带 Chromium，机制不同但改图能力一致。
 
+### 🆕 从零画图（不只是改图）
+
+本技能现在也能**从空白处一笔一笔画出整张图**，而不是只改现有内容。
+
+```js
+POBridge.drawDiagram({
+  origin: { x: 1900, y: 300 },   // 左上角起点
+  idPrefix: 'dg_',                // 所有图元 id 前缀（便于回滚）
+  width: 950,                     // 池宽
+  lanes: [
+    { title: '施工单位', items: [
+        { text: '发起申请', shape: 'start' },
+        { text: '编制方案', shape: 'process' },
+        { text: '内部审批', shape: 'process' } ]},
+    { title: '监理单位', items: [
+        { text: '形式审查', shape: 'process' },
+        { text: '是否通过', shape: 'decision' } ]},
+    { title: '建设单位', items: [
+        { text: '批准实施', shape: 'process' },
+        { text: '归档', shape: 'end' } ]}
+  ],
+  edges: [
+    ['0.0','0.1'], ['0.1','0.2'], ['0.2','1.0'],
+    ['1.0','1.1'], ['1.1','2.0','是'], ['1.1','0.2','否'], ['2.0','2.1']
+  ]
+});
+// edges 的端点写 "行号.列号"，第三位是可选的连线文字
+```
+
+#### 形状语义表（`shape` 取值）
+
+| shape | 官方形状名 | 尺寸 | 视觉 | 用在哪 |
+|---|---|---|---|---|
+| `start` | `start` | 84×60 | 圆头（含 curve） | 流程起点 |
+| `end` | `terminator` | 84×60 | 圆头 | 流程终点 |
+| `process` | `process` | 100×70 | 矩形 | 普通步骤 |
+| `decision` | `decision` | 90×70 | **菱形** | 判断/分支 |
+| `storedData` | `storedData` | 100×70 | 曲面 | 数据/表单 |
+| `predefined` | `predefinedProcess` | 100×70 | 双竖线框 | 子流程 |
+
+> ⚠️ **不要用 `end` 作为官方形状名** —— 它会让 `Model.create` 抛
+> `Cannot read properties of undefined (reading 'startsWith')`。终点要用 `terminator`。
+> 本技能的 `shape:'end'` 已内部映射到 `terminator`。
+
+#### 底层原语（想自己拼时用）
+
+| 方法 | 作用 |
+|---|---|
+| `buildNode({shape,x,y,w,h,text})` | 造单个节点（纯数据，含正确 path/anchors） |
+| `buildPool({x,y,width,lanes})` | 造池 + N 条泳道 + 表头 |
+| `buildRow({laneY,startX,items})` | 在一行里顺序摆节点（自动垂直居中） |
+| `drawEdge({from,to,text,fromSide,toSide})` | 画一条连线（自动定边 + 折点） |
+| `commit([...])` | 批量落库（一次 executeMessages） |
+| `drawDiagram(spec)` | 上面全串起来，一次画出整图 |
+
+#### 画得像人：手绘风格参数
+
+从一张 125 图元的真实手绘图里量出来的（`docs/handdrawn-style-spec.md` 有全量数据）。
+**核心是 5 个数字，不是审美玄学。**
+
+| 参数 | 手绘实测值 | 为什么 |
+|---|---|---|
+| 同排水平净空 | **48–50px**（中位 51） | 手绘的"呼吸感"本质就是这个常量 |
+| 同列垂直净空 | **48px**（gapY = 节点高 + 48） | 与水平同一个常量，不是两套规则 |
+| 泳道内垂直居中 | 上 65 / 下 65（200px 高泳道） | 严格居中，不是顶部对齐 |
+| 判断节点尺寸 | **90×70，14/14 完全一致** | 形状即语义，尺寸也要统一 |
+| 墨色数量 | **2 色**：边框 `33,41,48` + 文字 `50,50,50` | 手绘 123/125 图元零样式覆盖 |
+
+```js
+POBridge.STYLE  // 已内置上面全部默认值
+// { gapX:51, gapY:118, laneH:200, lanePadTop:65, poolHeaderW:84,
+//   fillColor:'255,255,255', borderColor:'33,41,48', borderWidth:1.5,
+//   fontColor:'50,50,50', fontSize:13, fontFamily:'微软雅黑', linkWidth:1.5 }
+```
+
+**手绘相对 AI 生成的优势，实测三条**（这是复刻重点）：
+
+1. **图形语义 100% 不混用** —— 15 个判断全是真菱形；AI 生成的图里判断被画成矩形，读者必须读文字才知道要分叉。
+2. **间距覆盖率** —— 手绘 57% 的相邻节点对落在 38–62px 目标带，AI 只有 29%，其余是 172–1900px 随机跳空。
+3. **配色克制** —— 手绘 2 色，AI 10 色且其中 4 种粉色肉眼不可辨。
+
+> ⚠️ **不要抄手绘的缺点**：它的 `process` 宽度有 6 种、高度有 14 种取值，x 坐标不对齐 15px 网格，
+> 还有 3 处节点重叠（−98~−139px）。那是手拖噪声，不是风格。复刻要抄的是
+> **语义不混用 + 单一墨色 + 50px 净空 + 垂直居中 + 列对齐**。
+
+#### 自动保存
+
+```js
+await POBridge.saveAndVerify(15000);
+// -> { ok: true, href: '#icon-cloud_sync', version: 2290, elapsedMs: 1200 }
+```
+
+判定"已落库"的三条件（实测）：`#save-tip` 图标回到 `#icon-cloud_sync`
+&& `sendMessage.saving === false` && `localStorage['version_local_<fileId>']` 与
+`sendMessage.version` 一致。优先调 `UI.save()`，它内部走 `sendMessage.saveOnline('click')`。
+
 ### 已实测能力
 
 - 读取现有泳道图 / 流程图结构（节点、连线、泳道、文字）

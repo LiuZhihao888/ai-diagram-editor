@@ -1599,6 +1599,474 @@
   }
 
   // ---------- 导出 ----------
+  // ========================================================================
+  // 绘制引擎（draw engine）—— 从零构造流程图，不依赖任何已有图元
+  // ------------------------------------------------------------------------
+  // 设计依据：docs/api-capability-map.md（API 实测）+ docs/handdrawn-style-spec.md（手绘风格量测）
+  //
+  // 核心约束（都是实测踩出来的）：
+  //   1. 落库走 MessageSource.executeMessages / Model.addMulti，不自己调 sendMessage.send
+  //   2. 节点必须带 attribute + anchors + path/getPath/getTextBlock，否则不渲染
+  //   3. textBlock 必须带 position，否则文字不显示
+  //   4. 泳道归属靠坐标几何，不靠任何字段
+  //   5. 连线折点要 fixed:true 才保得住
+  //   6. getLinkerPoints 第三参 nFlag=true 会丢弃 fixed 折点
+  // ========================================================================
+
+  var STYLE = {
+    // 手绘风格默认值（来自 handdrawn-style-spec.md 附录 A）
+    fontFamily: '微软雅黑',
+    fontSize: 13,
+    lineHeight: 1.25,
+    fontColor: '50,50,50',
+    fillColor: '255,255,255',
+    borderColor: '33,41,48',
+    borderWidth: 1.5,
+    radius: 0,
+    linkColor: '50,50,50',
+    linkWidth: 1.5,
+    gapX: 51,
+    gapY: 118,
+    laneH: 200,
+    lanePadTop: 65,
+    poolHeaderW: 84
+  };
+
+  // 形状规格表：语义 -> 尺寸与形状名
+  // 形状规格：语义 -> { Model.create 用的官方形状名, 默认尺寸 }
+  // ⚠️ 关键：必须用 Model.create(name) 取骨架，这样 start 才有 curve（圆头）、
+  //         decision 才是真菱形。自己 clone 别的节点会丢掉形状语义（实测踩过）。
+  var SHAPES = {
+    start:       { name: 'start',             w: 84,  h: 60 },
+    end:         { name: 'terminator',        w: 84,  h: 60 },
+    terminator:  { name: 'terminator',        w: 84,  h: 60 },
+    process:     { name: 'process',           w: 100, h: 70 },
+    decision:    { name: 'decision',          w: 90,  h: 70 },
+    diamond:     { name: 'diamond',           w: 90,  h: 70 },
+    rectangle:   { name: 'rectangle',         w: 96,  h: 54 },
+    storedData:  { name: 'storedData',        w: 100, h: 70 },
+    predefined:  { name: 'predefinedProcess', w: 100, h: 70 }
+  };
+
+  function deepClone(o) { return JSON.parse(JSON.stringify(o)); }
+
+  // 取一个形状的正确骨架。
+  // 🔴 必须用 Model.create(name, x, y)：它按官方 schema 生成 path/anchors/getPath，
+  //    这样 start 是圆头、decision 是真菱形。
+  //    ⚠️ Model.create 只造对象不落库，且会让 maxZIndex 不自增；随后我们覆盖 props 即可。
+  function createSkeleton(shapeName) {
+    var nm = shapeName || 'process';
+    try {
+      var o = global.Model.create(nm, 0, 0);
+      if (o && o.path && o.path.length) return o;
+    } catch (e) { /* 落到兜底 */ }
+    // 兜底：画布上找同类元素
+    var els = global.Model && global.Model.define && global.Model.define.elements;
+    if (els) {
+      var ids = Object.keys(els);
+      for (var i = 0; i < ids.length; i++) {
+        var e = els[ids[i]];
+        if (e && e.name === nm && e.props && typeof e.props.w === 'number') return e;
+      }
+      for (var k = 0; k < ids.length; k++) {
+        var e2 = els[ids[k]];
+        if (e2 && e2.name !== 'linker' && e2.props && typeof e2.props.w === 'number') return e2;
+      }
+    }
+    return null;
+  }
+
+  // 兼容旧名
+  function templateFor(shapeName) { return createSkeleton(shapeName); }
+
+  // 最后兜底：画布上没有任何节点、Model.create 也不可用时，合成一个最小可渲染骨架。
+  // （parity 的假环境就属于这种情况；真实编辑器里几乎不会走到）
+  function synthSkeleton(shapeName) {
+    var nm = shapeName || 'process';
+    var rect = [{ x: '0', action: 'move', y: '0' },
+                { x: 'w', action: 'line', y: '0' },
+                { x: 'w', action: 'line', y: 'h' },
+                { x: '0', action: 'line', y: 'h' },
+                { action: 'close' }];
+    return {
+      name: nm,
+      category: 'flow',
+      path: [{ fillStyle: { type: 'none' }, actions: rect }],
+      getPath: function () { return this.path; },
+      getAnchors: function () { return this.anchors || []; },
+      getTextBlock: function () { return this.textBlock || []; },
+      anchors: [],
+      attribute: { container: false, rotatable: true, visible: true, fixedLink: false,
+                   collapsable: false, collapsed: false, linkable: true, markerOffset: 5 },
+      props: { zindex: 900, x: 0, y: 0, w: 100, h: 70, angle: 0 }
+    };
+  }
+
+  // 构造一个节点对象（纯数据，不落库）
+  // opts: { id, shape, x, y, w, h, text, fill, border, fontSize }
+  function buildNode(opts) {
+    var o = opts || {};
+    var spec = SHAPES[o.shape] || SHAPES.process;
+    var tpl = createSkeleton(spec.name) || createSkeleton('process') || synthSkeleton(spec.name);
+
+    // 不依赖 Utils.copy（沙箱里可能没有），自己做深拷贝
+    var c = deepClone(tpl);
+    // deepClone 会丢函数字段，手动补回
+    if (typeof tpl.getPath === 'function') c.getPath = tpl.getPath;
+    if (typeof tpl.getAnchors === 'function') c.getAnchors = tpl.getAnchors;
+    if (typeof tpl.getTextBlock === 'function') c.getTextBlock = tpl.getTextBlock;
+    c.id = o.id || ('nd_' + Math.random().toString(36).slice(2, 10));
+    c.name = spec.name;
+
+    // 关键：attribute / anchors / path / getPath 都是渲染必需
+    if (tpl.attribute) c.attribute = deepClone(tpl.attribute);
+    // 🔴 渲染开关：buildVisibleShapeIds 的判据是
+    //    rectCross(canvasViewBox, shapeBox) || attribute.viewportRenderable === false
+    // 缺这个字段且不在视口内 => 永不渲染。必须显式置 false。
+    c.attribute = c.attribute || {};
+    c.attribute.viewportRenderable = false;
+    if (tpl.anchors) c.anchors = deepClone(tpl.anchors);
+    if (tpl.path) c.path = deepClone(tpl.path);
+    if (typeof tpl.getPath === 'function') c.getPath = tpl.getPath;
+    if (typeof tpl.getTextBlock === 'function') c.getTextBlock = tpl.getTextBlock;
+
+    c.props = {
+      zindex: o.zindex == null ? 900 : o.zindex,
+      x: Math.round(o.x), y: Math.round(o.y),
+      w: Math.round(o.w == null ? spec.w : o.w),
+      h: Math.round(o.h == null ? spec.h : o.h),
+      angle: 0
+    };
+
+    // textBlock 必须带 position
+    var txt = o.text == null ? '' : String(o.text);
+    c.textBlock = txt ? [{
+      position: { w: 'w-20', x: 10, h: 'h', y: 0 },
+      text: txt
+    }] : [];
+    c.text = txt;
+
+    // 样式
+    c.fillStyle = { type: 'solid', color: o.fill || STYLE.fillColor };
+    c.lineStyle = {
+      lineWidth: o.borderWidth == null ? STYLE.borderWidth : o.borderWidth,
+      lineColor: o.border || STYLE.borderColor,
+      lineStyle: 'solid'
+    };
+    var fs2 = {
+      fontFamily: STYLE.fontFamily,
+      size: o.fontSize || STYLE.fontSize,
+      lineHeight: STYLE.lineHeight,
+      color: o.fontColor || STYLE.fontColor,
+      textAlign: 'center',
+      vAlign: 'middle'
+    };
+    c.fontStyle = fs2;
+
+    c.dataAttributes = [];
+    c.group = '';
+    c.locked = false;
+    // 清掉模板带来的内部标记（不属于图元数据，会干扰渲染）
+    delete c.__clamped;
+    delete c.__requested;
+    delete c.text;
+    return c;
+  }
+
+  // 批量落库（一次 executeMessages，原子且进撤销栈）
+  function commit(shapes) {
+    var list = Array.isArray(shapes) ? shapes : [shapes];
+    if (!list.length) return { created: 0 };
+    global.MessageSource.executeMessages([{ action: 'create', content: list }], true);
+    return { created: list.length, ids: list.map(function (x) { return x.id; }) };
+  }
+
+  // 建一个泳道池 + N 条泳道骨架
+  // opts: { x, y, lanes:[{title,h?}], width, headerWidth }
+  function buildPool(opts) {
+    var o = opts || {};
+    var lanes = o.lanes || [];
+    var headerW = o.headerWidth || STYLE.poolHeaderW;
+    var laneH = STYLE.laneH;
+    var width = o.width || 1200;
+    var x = o.x, y = o.y;
+
+    var pool = buildNode({
+      id: o.id || ('pool_' + Math.random().toString(36).slice(2, 8)),
+      shape: 'rectangle', x: x, y: y,
+      w: width, h: laneH * lanes.length,
+      text: '', fill: o.fill || '255,255,255', borderWidth: 2
+    });
+    // 池不需要文字块
+    pool.textBlock = []; pool.text = '';
+
+    var out = [pool];
+    var laneIds = [];
+    lanes.forEach(function (ln, i) {
+      var ldt = buildNode({
+        id: (o.idPrefix || 'lane_') + i,
+        shape: 'rectangle',
+        x: x + headerW, y: y + i * laneH,
+        w: width - headerW, h: laneH,
+        text: '', fill: '255,255,255', borderWidth: 1
+      });
+      ldt.textBlock = []; ldt.text = '';
+      out.push(ldt);
+      laneIds.push(ldt.id);
+
+      // 泳道标题（池左侧的表头格）
+      var hd = buildNode({
+        id: (o.idPrefix || 'lane_') + i + '_hdr',
+        shape: 'rectangle',
+        x: x, y: y + i * laneH,
+        w: headerW, h: laneH,
+        text: ln.title || '', fill: o.headerFill || '242,246,250', borderWidth: 1,
+        fontSize: 12
+      });
+      out.push(hd);
+    });
+
+    commit(out);
+    return { poolId: pool.id, laneIds: laneIds, count: out.length,
+      rect: { x: x, y: y, w: width, h: laneH * lanes.length },
+      laneH: laneH, headerW: headerW };
+  }
+
+  // 在一行里顺序摆放节点
+  // opts: { laneY, startX, items:[{text,shape}], gapX }
+  function buildRow(opts) {
+    var o = opts || {};
+    var items = o.items || [];
+    var gapX = o.gapX == null ? STYLE.gapX : o.gapX;
+    var x = o.startX;
+    var laneH = o.laneH || STYLE.laneH;
+    var out = [];
+    var ids = [];
+
+    items.forEach(function (it, i) {
+      var spec = SHAPES[it.shape] || SHAPES.process;
+      var w = it.w == null ? spec.w : it.w;
+      var h = it.h == null ? spec.h : it.h;
+      // 垂直居中于泳道
+      var y = o.laneY + Math.round((laneH - h) / 2);
+      var nd = buildNode({
+        id: it.id || ((o.idPrefix || 'nd_') + i),
+        shape: it.shape || 'process',
+        x: x, y: y, w: w, h: h,
+        text: it.text, fontSize: it.fontSize
+      });
+      out.push(nd);
+      ids.push(nd.id);
+      x += w + (it.gapAfter == null ? gapX : it.gapAfter);
+    });
+
+    commit(out);
+    return { ids: ids, endX: x };
+  }
+
+  // 从零画一条连线（两端按 id 查找，自动定边、自动路由）
+  // opts: { id, from, to, text, fromSide, toSide, lineWidth, line }
+  function drawEdge(opts) {
+    var o = opts || {};
+    var els = global.Model.define.elements;
+    var a = els[o.from], b = els[o.to];
+    if (!a || !b) throw new Error('drawEdge 端点不存在: ' + o.from + ' -> ' + o.to);
+
+    var geo = computeEdgeGeometry(a.props, b.props, {
+      fromId: o.from, toId: o.to,
+      fromSide: o.fromSide, toSide: o.toSide
+    });
+
+    var tpl = templateFor('linker');
+    var edge;
+    if (tpl) {
+      edge = deepClone(tpl);
+      if (typeof tpl.getPath === 'function') edge.getPath = tpl.getPath;
+      if (typeof tpl.getTextBlock === 'function') edge.getTextBlock = tpl.getTextBlock;
+      edge.id = o.id || ('e_' + Math.random().toString(36).slice(2, 10));
+    } else {
+      edge = { id: o.id || ('e_' + Math.random().toString(36).slice(2, 10)), name: 'linker' };
+    }
+    edge.name = 'linker';
+    edge.linkerType = 'broken';
+    edge.props = { zindex: o.zindex == null ? 950 : o.zindex, x: 0, y: 0 };
+    edge.from = { x: geo.from.x, y: geo.from.y, angle: geo.from.angle, id: o.from };
+    edge.to   = { x: geo.to.x,   y: geo.to.y,   angle: geo.to.angle,   id: o.to };
+    edge.points = (geo.points || []).map(function (p) { return { x: p.x, y: p.y }; });
+
+    // 连线标签结构（手绘实测）：textBlock = [{ location: 沿线比例0~1, text }]
+    // 另需 textPos = { t, x, y } —— x/y 是标签的绝对坐标，渲染器据此定位。
+    // ⚠️ 用节点那套 {position:{w,h,x,y}} 是错的，会让文字压住节点。
+    var txt = o.text == null ? '' : String(o.text);
+    var loc = (o.labelLocation == null ? 0.5 : o.labelLocation);
+    if (txt) {
+      edge.textBlock = [{ location: loc, text: txt }];
+      // 标签落在折线总长的 loc 处
+      var chain = [{ x: geo.from.x, y: geo.from.y }]
+        .concat(edge.points)
+        .concat([{ x: geo.to.x, y: geo.to.y }]);
+      var segs = [], total = 0;
+      for (var si = 0; si < chain.length - 1; si++) {
+        var dx = chain[si + 1].x - chain[si].x, dy = chain[si + 1].y - chain[si].y;
+        var len = Math.abs(dx) + Math.abs(dy);
+        segs.push({ x: chain[si].x, y: chain[si].y, dx: dx, dy: dy, len: len });
+        total += len;
+      }
+      var target = total * loc, acc = 0, lp = { x: chain[0].x, y: chain[0].y };
+      for (var sj = 0; sj < segs.length; sj++) {
+        if (acc + segs[sj].len >= target || sj === segs.length - 1) {
+          var f = segs[sj].len ? (target - acc) / segs[sj].len : 0;
+          lp = { x: segs[sj].x + segs[sj].dx * f, y: segs[sj].y + segs[sj].dy * f };
+          break;
+        }
+        acc += segs[sj].len;
+      }
+      edge.textPos = { t: 28, x: Math.round(lp.x), y: Math.round(lp.y) };
+    } else {
+      edge.textBlock = [];
+    }
+    edge.text = txt;
+    edge.lineStyle = {
+      lineWidth: o.lineWidth == null ? STYLE.linkWidth : o.lineWidth,
+      lineColor: o.line || STYLE.linkColor,
+      lineStyle: 'solid',
+      beginArrowStyle: 'none',
+      endArrowStyle: 'solidArrow'
+    };
+    edge.fontStyle = {
+      fontFamily: STYLE.fontFamily, size: STYLE.fontSize,
+      color: STYLE.fontColor, textAlign: 'center', vAlign: 'middle'
+    };
+    edge.dataAttributes = [];
+    edge.group = '';
+    edge.locked = false;
+    edge.attribute = edge.attribute || {};
+    edge.attribute.viewportRenderable = false;
+
+    commit([edge]);
+    return { id: edge.id, fromSide: geo.fromSide, toSide: geo.toSide,
+      bends: (geo.points || []).length, points: edge.points };
+  }
+
+  // 整图生成：从一个声明式描述一次性画出来
+  // spec: { origin:{x,y}, idPrefix, width, lanes:[{ title, items:[{text,shape}] }],
+  //         edges:[[fromIdxToString, toIdxToString, label]] }
+  function drawDiagram(spec) {
+    var sp = spec || {};
+    var origin = sp.origin || { x: 100, y: 200 };
+    var prefix = sp.idPrefix || ('dg' + Math.random().toString(36).slice(2, 6) + '_');
+    var lanes = sp.lanes || [];
+    if (!lanes.length) throw new Error('drawDiagram 需要至少一条泳道');
+
+    // 1) 池 + 泳道
+    var poolInfo = buildPool({
+      x: origin.x, y: origin.y,
+      width: sp.width || 1200,
+      lanes: lanes,
+      idPrefix: prefix + 'lane_',
+      id: prefix + 'pool'
+    });
+
+    // 2) 每行节点
+    var allIds = [];
+    var rowInfo = [];
+    lanes.forEach(function (ln, i) {
+      var laneY = origin.y + i * poolInfo.laneH;
+      var r = buildRow({
+        laneY: laneY,
+        startX: origin.x + poolInfo.headerW + 30,
+        items: ln.items || [],
+        idPrefix: prefix + 'n' + i + '_',
+        laneH: poolInfo.laneH
+      });
+      rowInfo.push(r);
+      allIds = allIds.concat(r.ids);
+    });
+
+    // 3) 连线（用 "行号.列号" 或直接 id 指定端点）
+    var edgeResults = [];
+    var idMap = {};
+    lanes.forEach(function (ln, i) {
+      (ln.items || []).forEach(function (it, k) {
+        idMap[i + '.' + k] = rowInfo[i].ids[k];
+        if (it.id) idMap[it.id] = rowInfo[i].ids[k];
+      });
+    });
+
+    (sp.edges || []).forEach(function (e, i) {
+      var fromId = idMap[e[0]] || e[0];
+      var toId = idMap[e[1]] || e[1];
+      try {
+        edgeResults.push(drawEdge({
+          id: prefix + 'e' + i,
+          from: fromId, to: toId,
+          text: e[2] || '',
+          fromSide: e[3], toSide: e[4]
+        }));
+      } catch (err) {
+        edgeResults.push({ error: String(err.message), from: fromId, to: toId });
+      }
+    });
+
+    return { prefix: prefix, pool: poolInfo, rows: rowInfo,
+      nodes: allIds.length, edges: edgeResults.length, edgeResults: edgeResults };
+  }
+
+  // 保存并等待落库完成
+  // 依 api-capability-map.md E1/E2：Ctrl+S -> UI.save() -> saveOnline()；
+  // 判据 = save-tip 图标回到 cloud_sync && !saving && 版本一致
+  function saveAndVerify(timeoutMs) {
+    var timeout = timeoutMs || 15000;
+    return new Promise(function (resolve) {
+      var SM = global.sendMessage;
+      var startVer = SM ? SM.version : null;
+      var started = Date.now();
+
+      function hrefOf() {
+        var u = document.querySelector('#save-tip use');
+        if (!u) return null;
+        return u.getAttribute('xlink:href') || u.getAttribute('href');
+      }
+
+      // 优先用官方 API；退化为合成 Ctrl+S
+      try {
+        if (typeof global.UI !== 'undefined' && global.UI && typeof global.UI.save === 'function') {
+          global.UI.save();
+        } else {
+          var ev = new KeyboardEvent('keydown', { keyCode: 83, ctrlKey: true, bubbles: true });
+          document.dispatchEvent(ev);
+        }
+      } catch (e) { /* 继续轮询 */ }
+
+      function tick() {
+        var href = hrefOf();
+        var saving = SM ? !!SM.saving : false;
+        var ver = SM ? SM.version : null;
+        var localVer = null;
+        try {
+          var fid = (SM && SM.file_id) || '585463292233';
+          localVer = localStorage.getItem('version_local_' + fid);
+        } catch (e) {}
+
+        var idle = (href === '#icon-cloud_sync');
+        var versionOk = (localVer == null) || (String(localVer) === String(ver));
+
+        if (idle && !saving && versionOk) {
+          resolve({ ok: true, href: href, saving: saving, version: ver,
+            localVersion: localVer, elapsedMs: Date.now() - started, startVersion: startVer });
+          return;
+        }
+        if (Date.now() - started > timeout) {
+          resolve({ ok: false, reason: 'timeout', href: href, saving: saving,
+            version: ver, localVersion: localVer, elapsedMs: Date.now() - started });
+          return;
+        }
+        setTimeout(tick, 250);
+      }
+      setTimeout(tick, 400);
+    });
+  }
+
   global.POBridge = {
     RED: RED,
     readGraph: readGraph,
@@ -1629,7 +2097,17 @@
     focusRect: focusRect,
     getPoolRows: getPoolRows,
     createPool: createPool,
-    setPoolRows: setPoolRows
+    setPoolRows: setPoolRows,
+    // 绘制引擎
+    STYLE: STYLE,
+    SHAPES: SHAPES,
+    buildNode: buildNode,
+    buildPool: buildPool,
+    buildRow: buildRow,
+    drawEdge: drawEdge,
+    drawDiagram: drawDiagram,
+    commit: commit,
+    saveAndVerify: saveAndVerify
   };
 
   return global.POBridge;
