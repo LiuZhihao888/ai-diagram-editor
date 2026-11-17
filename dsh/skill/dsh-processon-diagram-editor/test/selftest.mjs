@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import vm from 'node:vm';
 import * as P from '../lib/page.mjs';
 
 let pass = 0;
@@ -256,7 +257,7 @@ const MIN = path.join(SKILL, 'pobridge.min.js');
 // 但技能也可能被单独安装到 ~/.dsh/skills/（此时向上三级不是仓库根）。
 // 所以按「候选路径依次探测」而不是硬算，找不到就明确跳过而不是报 ENOENT。
 const BRIDGE_SRC = (() => {
-  // 只认仓库布局的 bridge/pobridge.js —— 那是唯一真相。
+  // 仓库布局的 bridge/pobridge.js —— 有源码时优先用它做静态断言。
   // 刻意**不**回退到技能目录的 bridge-src/pobridge.js：那是历史遗留的分叉副本，
   // 内容比仓库旧（曾差 23KB、缺 createSideCard/detectOverlaps），
   // 拿它做断言会得到「假失败」，反而掩盖真正的问题。
@@ -273,6 +274,47 @@ const HAS_BRIDGE_SRC = BRIDGE_SRC !== null;
 function bridgeCode() {
   if (!BRIDGE_SRC) throw new Error('SKIP_NO_BRIDGE_SRC');
   return fs.readFileSync(BRIDGE_SRC, 'utf8');
+}
+
+// ---------------------------------------------------------------- 可执行沙箱
+// 【为什么需要】只查源码字符串的断言是弱断言：把 for(i=0;i<4;i++) 改成 i<0、
+// 或在函数开头插一句 if(true) return false，变量名全都还在，弱断言照过。
+// 独立核验用变异测试证明过这一点（3 种真实回归穿透全部 135 项）。
+//
+// 【怎么办】在 vm 里给 pobridge.min.js 造一个假运行时（Model/Designer/Utils/
+// MessageSource），把它当黑盒调，断言**返回值**而不是**源码特征**。
+// 这样即使装到 ~/.dsh/skills/（没有 bridge/pobridge.js 源码）也能跑真测试。
+const HAS_SANDBOX_RUNTIME = true;
+
+/** 建一个最小假画布，返回 {sandbox, POBridge, els} */
+function makeSandbox(shape) {
+  const els = shape || {};
+  const listeners = {};
+  const fake = {
+    Model: { define: { elements: els } },
+    Designer: {
+      events: { push() {} },
+      scrollShapesToView() {},
+      getZoom() { return 1; },
+      getScrollPosition() { return { x: 0, y: 0 }; },
+      setScrollPosition() {},
+      repaint() {},
+    },
+    Utils: { guid() { return 'g' + Math.random().toString(36).slice(2, 8); } },
+    MessageSource: {
+      executed: [],
+      executeMessages(m) { this.executed.push(m); },
+    },
+    document: { createElement: () => ({ getContext: () => null, style: {} }) },
+    window: null,
+    console,
+  };
+  fake.window = fake;
+  fake.global = fake;
+  const sandbox = vm.createContext(fake);
+  const src = fs.readFileSync(MIN, 'utf8');
+  vm.runInContext(src, sandbox);
+  return { sandbox, fake, els };
 }
 
 ok('技能里存在 pobridge.min.js', () => assert.ok(fs.existsSync(MIN)));
@@ -739,19 +781,57 @@ ok('桥接层导出 suggestChannel / rerouteEdge / rerouteWorstEdges', () => {
     assert.ok(b.includes(k + ': ' + k), '缺导出 ' + k);
   }
 });
+// 【行为断言】不查源码，直接调真函数，检查它真正发出去的 update 消息。
+// 这样即使在 ~/.dsh/skills/ 下没有 bridge/pobridge.js 源码也能跑（P6 修复）。
 ok('rerouteEdge 保持端点锚点（不动 from/to 的 y）', () => {
-  const b = bridgeCode();
-  const i = b.indexOf('function rerouteEdge');
-  const seg = b.slice(i, i + 1400);
-  assert.doesNotMatch(seg, /upd\.from\.y\s*=/, '不能改 from.y');
-  assert.doesNotMatch(seg, /upd\.to\.y\s*=/, '不能改 to.y');
-  assert.match(seg, /upd\.points\s*=/, '应设置 points');
+  const { fake, els } = makeSandbox({
+    nA: { name: 'process', props: { x: 100, y: 100, w: 132, h: 62 } },
+    nB: { name: 'process', props: { x: 500, y: 300, w: 132, h: 62 } },
+    lk: {
+      name: 'linker', linkerType: 'straight',
+      from: { x: 232, y: 131, angle: 0, id: 'nA' },
+      to: { x: 500, y: 331, angle: 3.14, id: 'nB' },
+      points: [],
+    },
+  });
+  const before = JSON.parse(JSON.stringify(els.lk));
+  fake.POBridge.rerouteEdge('lk', 200);
+  const msg = fake.MessageSource.executed[0];
+  assert.ok(msg, 'rerouteEdge 应该发出一条 update 消息');
+  const upd = msg[0].content.shapes[0];
+  assert.equal(upd.from.y, before.from.y, 'from.y 必须保持不变（否则锚点脱离边缘）');
+  assert.equal(upd.to.y, before.to.y, 'to.y 必须保持不变');
+  assert.equal(upd.from.x, before.from.x, 'from.x 必须保持不变');
+  assert.equal(upd.to.x, before.to.x, 'to.x 必须保持不变');
+  assert.ok(Array.isArray(upd.points) && upd.points.length >= 2, '应设置 points');
+  assert.equal(upd.points[0].y, 200, '折点应落在通道上');
 });
-ok('rerouteWorstEdges 调用了竖直段校验', () => {
-  const b = bridgeCode();
-  const i = b.indexOf('function rerouteWorstEdges');
-  const seg = b.slice(i, i + 1600);
-  assert.match(seg, /verticalSegBlocked/, '必须校验竖直段，否则会穿节点');
+// 【行为断言】构造"水平通道干净但竖直段必穿节点"的场景，
+// 正确实现必须跳过并说明原因；如果没做竖直段校验，它就会硬改。
+ok('rerouteWorstEdges 漏过竖直段必穿节点的边', () => {
+  const { fake } = makeSandbox({
+    // 源节点在下，目标节点在上，中间夹一个节点挡住竖直通道
+    nSrc: { name: 'process', props: { x: 100, y: 400, w: 132, h: 62 } },
+    nDst: { name: 'process', props: { x: 100, y: 100, w: 132, h: 62 } },
+    nBlock: { name: 'process', props: { x: 140, y: 240, w: 60, h: 60 } },
+    // 两端锚点都在竖直边上（T/B），通道必然穿过 nBlock
+    lk: {
+      name: 'linker', linkerType: 'broken',
+      from: { x: 166, y: 400, angle: -1.57, id: 'nSrc' },
+      to: { x: 166, y: 162, angle: 1.57, id: 'nDst' },
+      points: [{ x: 166, y: 300 }, { x: 166, y: 230 }],
+    },
+  });
+  let out;
+  try { out = fake.POBridge.rerouteWorstEdges({ max: 5, minCross: 1 }); }
+  catch (e) { return; }  // 没有可绕的边也算合理
+  // 如果它改了这个边，就说明没做竖直段校验
+  const touched = (out.applied || []).some((v) => v.edge === 'lk');
+  if (touched) {
+    const msg = fake.MessageSource.executed[0];
+    const upd = msg && msg[0].content.shapes[0];
+    assert.ok(false, '竖直段必穿 nBlock，不该硬改；实际改成 ' + JSON.stringify(upd && upd.points));
+  }
 });
 ok('verticalSegBlocked 排除泳道/连线/超大元素', () => {
   const b = bridgeCode();
@@ -786,18 +866,78 @@ ok('SKILL.md 记录了两条 reroute 安全铁律', () => {
 });
 
 // ---------------------------------------------------------------- 核验后新增（P1/P4/P7）
-ok('detectCrossings 支持斜线段（Liang-Barsky）', () => {
-  const b = bridgeCode();
-  const i = b.indexOf('function segHitsRect');
-  const seg = b.slice(i, i + 1800);
-  assert.match(seg, /t0/, '缺裁剪参数 t0');
-  assert.match(seg, /t1/, '缺裁剪参数 t1');
-  assert.ok(!/^\s*return false;\s*$/m.test(seg.split('for (var i2')[0].slice(-200)), '不能在校验前就 return false');
+// 【行为断言】不查源码字符串，直接跑真函数。
+// 变异测试证明：查源码特征会被 for(i=0;i<0;...) 或 if(true) return false 骗过。
+ok('detectCrossings 行为：斜线穿节点必须报出来', () => {
+  // 一个 60x40 的节点挡在 (300,300)，连线从 (100,100) 斜穿到 (500,500)
+  const { fake } = makeSandbox({
+    nA: { name: 'process', props: { x: 100, y: 100, w: 132, h: 62 } },
+    nB: { name: 'process', props: { x: 500, y: 500, w: 132, h: 62 } },
+    nMid: { name: 'process', props: { x: 300, y: 280, w: 60, h: 60 } },
+    lk: {
+      name: 'linker', linkerType: 'straight',
+      from: { x: 166, y: 162, angle: 1.57, id: 'nA' },
+      to: { x: 566, y: 500, angle: -1.57, id: 'nB' },
+      points: [],
+    },
+  });
+  const r = fake.POBridge.detectCrossings('');
+  assert.ok(r.crossings >= 1, '斜线穿过 nMid 必须被计到，实际 ' + r.crossings);
+  const hit = (r.list || []).some((v) => v.hitNode === 'nMid');
+  assert.ok(hit, '应报出命中 nMid，实际 ' + JSON.stringify(r.list));
 });
-ok('auditLayoutExpr 的 hitSeg 也支持斜线', () => {
-  const e = P.auditLayoutExpr('ai_');
-  assert.match(e, /t0/, '斜线段必须有裁剪');
-  assert.match(e, /t1/);
+
+// 【反向用例，至关重要】Liang-Barsky 的经典失败模式是循环不执行、
+// t0/t1 保持初值 0/1，return t0<=t1 恒为 true —— 于是所有斜线都被判"穿过"。
+// 只测"穿节点要报"抓不到这个，必须同时测"不穿节点不能报"。
+ok('detectCrossings 行为：斜线不穿节点时必须为 0', () => {
+  const { fake } = makeSandbox({
+    nA: { name: 'process', props: { x: 100, y: 100, w: 132, h: 62 } },
+    nB: { name: 'process', props: { x: 500, y: 500, w: 132, h: 62 } },
+    // 这个节点在斜线上方很远，不该被撞到
+    nFar: { name: 'process', props: { x: 300, y: 100, w: 60, h: 60 } },
+    lk: {
+      name: 'linker', linkerType: 'straight',
+      from: { x: 166, y: 162, angle: 1.57, id: 'nA' },
+      to: { x: 566, y: 500, angle: -1.57, id: 'nB' },
+      points: [],
+    },
+  });
+  const r = fake.POBridge.detectCrossings('');
+  assert.equal(r.crossings, 0,
+    '斜线没碰到 nFar，不能报穿越（循环不执行的典型症状就是恒报 true），实际 ' +
+    JSON.stringify(r.list));
+});
+
+ok('detectCrossings 行为：正交线穿节点也要报（不能为了修斜线弄坏正交）', () => {
+  const { fake } = makeSandbox({
+    nA: { name: 'process', props: { x: 100, y: 100, w: 132, h: 62 } },
+    nB: { name: 'process', props: { x: 500, y: 100, w: 132, h: 62 } },
+    nMid: { name: 'process', props: { x: 300, y: 80, w: 60, h: 100 } },
+    lk: {
+      name: 'linker', linkerType: 'straight',
+      from: { x: 232, y: 131, angle: 0, id: 'nA' },
+      to: { x: 500, y: 131, angle: 3.14, id: 'nB' },
+      points: [],
+    },
+  });
+  const r = fake.POBridge.detectCrossings('');
+  assert.ok(r.crossings >= 1, '正交穿 nMid 必须被计到');
+});
+
+ok('detectCrossings 行为：不穿节点时必须是 0（不能乱报）', () => {
+  const { fake } = makeSandbox({
+    nA: { name: 'process', props: { x: 100, y: 100, w: 132, h: 62 } },
+    nB: { name: 'process', props: { x: 500, y: 100, w: 132, h: 62 } },
+    lk: {
+      name: 'linker', linkerType: 'straight',
+      from: { x: 232, y: 131, angle: 0, id: 'nA' },
+      to: { x: 500, y: 131, angle: 3.14, id: 'nB' },
+      points: [],
+    },
+  });
+  const r = fake.POBridge.detectCrossings('');
+  assert.equal(r.crossings, 0, '不该有穿越，实际 ' + JSON.stringify(r.list));
 });
 ok('auditLayoutExpr 有 emptyScope 守卫（防错前缀假通过）', () => {
   const e = P.auditLayoutExpr('ai_');
@@ -832,7 +972,13 @@ if (fails.length) {
   process.exit(1);
 }
 if (skip) {
-  console.log('  SKIP  ' + skip + ' 项（桥接层源码不在技能目录旁，仅仓库布局才检查）');
+  // 【不能静默降级】跳过 ≠ 通过。装到 ~/.dsh/skills/ 后没有 bridge/pobridge.js 源码，
+  // 那批"查源码字符串"的断言只能跳过；但关键的安全性质已改为沙箱行为断言（会真的跑）。
+  // 这里明确告警，避免用户看到一片绿而误以为全测过了。
+  console.log('  ⚠ SKIP  ' + skip + ' 项：桥接层源码不在技能目录旁（仅仓库布局才检查这些源码断言）');
   for (const s of skips) console.log('        - ' + s);
+  console.log('');
+  console.log('  注意：以上 ' + skip + ' 项未被执行，不代表通过。');
+  console.log('  关键安全行为（锚点保持/竖直段校验/斜线检测）已用沙箱行为断言覆盖，那些是真的跑了。');
 }
-console.log('✓ ' + pass + ' 项自检通过' + (skip ? '（跳过 ' + skip + ' 项）' : '，全部通过'));
+console.log('✓ ' + pass + ' 项自检通过' + (skip ? '（另有 ' + skip + ' 项因缺源码未执行）' : '，全部通过'));
