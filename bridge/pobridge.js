@@ -2148,6 +2148,7 @@
       function tick() {
         var href = hrefOf();
         var saving = SM ? !!SM.saving : false;
+        var errSave = SM ? SM.errorSave : 0;
         var ver = SM ? SM.version : null;
         var localVer = null;
         try {
@@ -2155,10 +2156,14 @@
           localVer = localStorage.getItem('version_local_' + fid);
         } catch (e) {}
 
+        // 判据说明（实测修正）：
+        //   sendMessage.version 与 localStorage['version_local_*'] 是**两个不同步的计数器**
+        //   （观察到 2380 vs 2378，方向不固定），"相等"永远不成立 → 旧判据必然超时。
+        //   真正可靠的信号是：图标回到空闲 + 不在保存中 + 无保存错误。
         var idle = (href === '#icon-cloud_sync');
-        var versionOk = (localVer == null) || (String(localVer) === String(ver));
+        var noErr = (errSave === 0 || errSave == null);
 
-        if (idle && !saving && versionOk) {
+        if (idle && !saving && noErr) {
           resolve({ ok: true, href: href, saving: saving, version: ver,
             localVersion: localVer, elapsedMs: Date.now() - started, startVersion: startVer });
           return;

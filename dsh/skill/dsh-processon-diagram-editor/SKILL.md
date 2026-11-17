@@ -135,6 +135,32 @@ DOM 里连线的盒还在旧位置，截图看到箭头扎进节点内部，而�
 
 | 7 | `auditEdgeRender(prefix).pass === true` | 抓"数据对、画面错" |
 
+#### 从零画图：第二批实战陷阱（第二轮盲测）
+
+**⑦ `saveAndVerify` 的旧判据永远超时（已修）**
+旧版要求 `localStorage['version_local_*'] === sendMessage.version`，
+但这两个是**不同步的计数器**（实测 2380 vs 2378，方向不固定），"相等"从不成立。
+现在改为：**图标回到 `#icon-cloud_sync` && `saving===false` && `errorSave===0`**。
+验证落库最可靠的办法仍是**开新标签页重载同一 URL 再读 `Model.define.elements`**。
+
+**⑧ `createPool` 传 `title:''` 会留一条空白竖带**
+池左侧 `headerWidth` 宽的表头区没有文字 → 视觉上是一条空带。
+而且**事后补标题会失败**：用 `executeMessages` 走 `update` 改池的 `textBlock`
+会抛 `Cannot read properties of undefined (reading 'length')`。
+**结论：建池时就把 title 给对，别想着事后补。**
+（若确实需要无标题池，把 `headerWidth` 调小到 40–56 减少空带。）
+
+**⑨ 跨泳道流程不要用 `drawDiagram`**
+`buildRow` 让每条泳道都从同一个 `startX` 起排，做不出"楼梯式"跨泳道推进。
+所以「陷阱①」的正确解读是：
+- **各泳道独立并列**的图 → `drawDiagram` 一把梭
+- **跨泳道纵向跳转**的图 → 必须走底层三件套 `createPool` + `buildNode` + `drawEdge`
+
+**⑩ `e.text` 不是连线的文字字段**
+文字在 `e.textBlock[0].text`（配合 `e.textPos` 定位）。
+审计脚本若读 `e.text` 会得到全空，然后报 `pass:true` —— **假绿**。
+`drawEdge` 现在两个字段都会写，但已有连线（尤其手绘的）只保证 `textBlock`。
+
 #### 自动保存
 
 ```js
@@ -1170,7 +1196,11 @@ A → B → C → D
 
 ## 五之六、验收清单 —— 画完必须逐项过
 
-**这是唯一的验收标准。** 六项全过才算合格；任何一项不过就是没过，不要用「看起来还行」代替。
+**这是数据层验收标准。** `auditLayoutExpr` 的六项全过才算合格；
+任何一项不过就是没过，不要用「看起来还行」代替。
+
+> 🔴 **但它只查数据，不查渲染。** 第 7 项 `auditEdgeRender(prefix).pass`
+> 专门抓「数据对、画面错」（连线 DOM 盒滞后于数据）。完整验收 = 六项 + 这一项。
 
 ```js
 auditLayoutExpr('ai_', 9)   // 第二个参数是页索引，必须有
@@ -1186,6 +1216,8 @@ auditLayoutExpr('ai_', 9)   // 第二个参数是页索引，必须有
 | 6 | `lkSkipped` | **= 0** | 有连线因作用域不匹配被跳过，此时 `badAnchor=0` **不可信** |
 
 返回值里还有 `pass` 字段，是这六项的合成判定。**看 `pass` 就够，但出问题时要看具体字段定位。**
+
+> ⚠️ 这个 `pass` 只覆盖数据层。渲染层另见 `auditEdgeRender`。
 
 > 上面六项管的是「排布对不对」。**尺寸给得对不对是另一件事**，用
 > `measureTextFitExpr` 单独量（只读、不写画布）：`ratio > 0.15` 说明节点普遍偏宽，
@@ -1777,7 +1809,7 @@ node test/mutation.mjs    # 测试本身还有没有用
 
 ### 验收判定的六个判据
 
-`auditLayoutExpr` 的 `pass` 依赖六项，**每一项都要能独立否决**：
+`auditLayoutExpr` 的 `pass` 依赖六项（渲染层第 7 项在 `auditEdgeRender`），**每一项都要能独立否决**：
 
 | 判据 | 含义 | 行为断言 |
 |---|---|---|
