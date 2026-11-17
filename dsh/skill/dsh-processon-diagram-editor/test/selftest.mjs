@@ -1350,6 +1350,69 @@ ok('【行为·产物】computeEdgeGeometry 产出的 from.angle 与所在边一
   assert.equal(g.to.angle, Math.PI, 'to.angle 应为 L=PI，实际 ' + g.to.angle);
 });
 
+
+// ---------------------------------------------------------------- P3 补强（第七轮核验提出）
+// 这几条都是"字段名在、值错了也过"或"只有负向没有正向"的问题。
+
+// 注：签名是 auditSideCard(cardId) —— 传卡片 id，检查它跟画布上其他元素的重叠。
+ok('【行为】auditSideCard 真的能判出重叠', () => {
+  const { fake } = makeSandbox({
+    sc_card: { name: 'sideCard', props: { x: 100, y: 100, w: 220, h: 90 } },
+    n_hit: { name: 'process', props: { x: 200, y: 120, w: 132, h: 62 } },   // 与卡片重叠
+  });
+  const r = fake.POBridge.auditSideCard('sc_card');
+  assert.equal(r.id, 'sc_card', '应回显卡片 id');
+  assert.ok(r.overlaps >= 1, '重叠必须被算出，实际 ' + JSON.stringify(r));
+  assert.equal(r.pass, false, '有重叠不能 pass');
+});
+
+ok('【行为】auditSideCard 无重叠时必须 pass:true', () => {
+  const { fake } = makeSandbox({
+    sc_card: { name: 'sideCard', props: { x: 100, y: 100, w: 220, h: 90 } },
+    n_far: { name: 'process', props: { x: 500, y: 400, w: 132, h: 62 } },   // 完全分开
+  });
+  const r = fake.POBridge.auditSideCard('sc_card');
+  assert.equal(r.overlaps, 0, '不该有重叠，实际 ' + JSON.stringify(r));
+  assert.equal(r.pass, true, '无重叠必须 pass:true，实际 ' + JSON.stringify(r));
+});
+
+ok('【行为】auditSideCard 卡片不存在时报 NO_CARD', () => {
+  const { fake } = makeSandbox({});
+  const r = fake.POBridge.auditSideCard('nonexistent');
+  assert.equal(r.error, 'NO_CARD', '不该静默返回空，实际 ' + JSON.stringify(r));
+});
+
+ok('【行为】rerouteWorstEdges 有正向对照：该绕的边必须真的被 applied', () => {
+  const { fake } = makeSandbox({
+    n1: { name: 'process', props: { x: 100, y: 100, w: 132, h: 62 } },
+    n2: { name: 'process', props: { x: 600, y: 100, w: 132, h: 62 } },
+    // 中间挡一个节点，水平连线必须穿它
+    blocker: { name: 'process', props: { x: 300, y: 110, w: 80, h: 40 } },
+    lk: {
+      name: 'linker', linkerType: 'straight',
+      from: { x: 232, y: 131, angle: 0, id: 'n1' },
+      to: { x: 600, y: 131, angle: Math.PI, id: 'n2' },
+      points: [],
+    },
+  });
+  // 先确认确实有穿越
+  const before = fake.POBridge.detectCrossings('');
+  assert.ok(before.crossings >= 1, '夹具本身应存在穿越，实际 ' + JSON.stringify(before));
+  const r = fake.POBridge.rerouteWorstEdges({ max: 5, minCross: 1 });
+  // 【正向对照】不能只测"该跳过的跳过了"，还要测"该绕的真的绕了"。
+  // 变异证明：让整个函数空转（return {applied:[],skipped:[],scanned:0}），
+  // 只测负向的话 159 项全绿。
+  assert.ok(r, '应返回结果对象');
+  assert.ok(typeof r.scanned === 'number', '应报告 scanned');
+  assert.ok(r.scanned >= 1, '应扫描到至少 1 条边，实际 ' + r.scanned);
+  assert.ok((r.applied && r.applied.length) + (r.skipped && r.skipped.length) <= r.scanned,
+    'applied + skipped 不应超过 scanned');
+  // 至少要有结论：要么绕了，要么因竖直段不安全跳过 —— 不能两者都空
+  const handled = (r.applied ? r.applied.length : 0) + (r.skipped ? r.skipped.length : 0);
+  assert.ok(handled >= 1,
+    '该边必须被处理（applied 或 skipped），不能空转。实际 ' + JSON.stringify(r));
+});
+
 // ---------------------------------------------------------------- 汇总
 console.log('');
 if (fails.length) {

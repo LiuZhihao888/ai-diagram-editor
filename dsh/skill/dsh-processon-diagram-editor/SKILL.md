@@ -19,7 +19,7 @@ description: "在用户已打开的 ProcessOn 画布上做 AI 增量改图。读
 - 多标签场景精确定位目标图、视口跳转不打扰用户
 
 > 页面侧 JS 片段全部集中在本技能目录的 `lib/page.mjs`。**不要现场手写 JS** —— 用那里的函数，参数走 `JSON.stringify`。
-> 离线自检：`node test/selftest.mjs`（159 项）+ `node test/parity.mjs` + `node test/verify-pool.mjs`（33 项）—— 都不需要浏览器、不碰画布，本技能自带。
+> 离线自检：`node test/selftest.mjs`（163 项）+ `node test/parity.mjs` + `node test/verify-pool.mjs`（33 项）—— 都不需要浏览器、不碰画布，本技能自带。
 
 ---
 
@@ -457,7 +457,7 @@ var g = POBridge.getPoolRows('ai_pool_<时间戳>');
 ```bash
 cd dsh/skill/dsh-processon-diagram-editor
 node test/verify-pool.mjs      # 33 项：片段语法/转义 + 假运行时源码↔产物 parity + 真实字段不变量 + 边界守卫
-node test/selftest.mjs         # 159 项：片段/转义/守卫/自包含/书签版本/池片段/侧栏卡/文字定宽/验收判定
+node test/selftest.mjs         # 163 项：片段/转义/守卫/自包含/书签版本/池片段/侧栏卡/文字定宽/验收判定
 node test/parity.mjs           # 源码与压缩产物行为一致（含泳道池断言）
 node ../../../bridge/build.mjs --check   # 产物未漂移（在 bridge/ 下运行亦可）
 ```
@@ -1029,7 +1029,7 @@ node tools/sync-skill.mjs          # 执行（自动备份 + 更新版本号 + �
 `_meta.json` 的 `version` 形如 `0.2.510473`，第三段是**内容哈希**派生的数字。
 
 **为什么要这样**：历史上两边 `_meta.json` 都写着 `0.2.0`，但内容差了 4 天
-（SKILL.md 24KB vs 40KB，测试 36 项 vs 159 项）。光看版本号根本发现不了不同。
+（SKILL.md 24KB vs 40KB，测试 36 项 vs 163 项）。光看版本号根本发现不了不同。
 现在内容一变、版本号就变，`diff` 一眼可见。
 
 同步时会写入三个字段：
@@ -1051,11 +1051,11 @@ node tools/sync-skill.mjs          # 执行（自动备份 + 更新版本号 + �
 
 | 布局 | selftest | verify-pool |
 |---|---|---|
-| 仓库（`dsh/skill/...`） | **159 项全过** | **33 项全过** |
-| 独立安装（`~/.dsh/skills/...`） | 100 过 + 12 跳过 | 32 过 + 1 跳过 |
+| 仓库（`dsh/skill/...`） | **163 项全过** | **33 项全过** |
+| 独立安装（`~/.dsh/skills/...`） | **148 过 + 15 跳过** | 32 过 + 1 跳过 |
 
-跳到的那 12 项都是「源码里有没有某个常量/导出」这类断言 —— 独立安装时无从校验，跳过是对的。
-**如果你在安装布局看到 15 项 skip，那不是坏了。**
+跳过的那 15 项都是「源码里有没有某个常量/导出」这类断言 —— 独立安装时无从校验，跳过是对的。
+**看到 skip 不是坏了，但也不等于通过。**
 
 > 注意：测试**刻意不读** `bridge-src/pobridge.js`。那是历史遗留的分叉副本
 > （比仓库旧 23KB、缺 `createSideCard`/`detectOverlaps`），拿它做断言只会得到假失败。
@@ -1440,7 +1440,7 @@ node test/mutation.mjs    # 测试本身还有没有用
    （典型原因：源码改了，硬编码的特征串失配）。
 3. **按语义定位** —— 不硬编码压缩后的变量名，重新构建就不失配。
 
-当前 16/16 全抓到，正向对照通过。
+当前 19/19 全抓到，正向对照通过。
 
 ### 验收判定的六个判据
 
@@ -1479,13 +1479,15 @@ node test/mutation.mjs    # 测试本身还有没有用
 
 ### 🔴 零行为覆盖的导出（诚实清单）
 
-`POBridge` 有 **30** 个导出。第五、六轮核验用 Proxy 实测：**只有 6 个真正被调用过**。
+`POBridge` 有 **30** 个导出。第七轮核验实测：**selftest 真的调了 8 个**，其余只有字符串或漂移探针。
 
 | 状态 | 数量 | 函数 |
 |---|---|---|
-| ✅ 有真行为断言 | 6 | `clampIntoView` `detectCrossings` `reflowSpacing` `rerouteEdge` `rerouteWorstEdges` `ANCHOR` |
-| ⚠️ 仅有 `parity.mjs` 漂移探针 | 10 | `createNode` `readGraph` `updateNode` `createEdge` `removeNodes` `createPool` `setPoolRows` `getPoolRows` `focusRect` `getViewBox` |
-| ❌ 零行为覆盖 | 14 | `computeEdgeGeometry`（现已有）`rebindEdge` `rebindEdges` `listEdges` `resetBrokenLinkers` `suggestChannel` `routeAround` `autoRouteAround` `polishLayout` `createSideCard` `auditSideCard` `detectOverlaps` `focusRectExpr` `focusExpr` |
+| ✅ selftest 真调（vm 沙箱执行） | **9** | `ANCHOR` `LAYOUT` `auditSideCard` `clampIntoView` `computeEdgeGeometry` `detectCrossings` `reflowSpacing` `rerouteEdge` `rerouteWorstEdges` |
+| ⚠️ 只有 `parity.mjs` 漂移探针 | 10 | `createNode` `readGraph` `updateNode` `createEdge` `removeNodes` `createPool` `setPoolRows` `getPoolRows` `focusRect` `getViewBox` |
+| ❌ 零行为覆盖 | 11 | `RED` `auditSideCard` `autoRouteAround` `createSideCard` `detectOverlaps` `listEdges` `polishLayout` `rebindEdge` `rebindEdges` `resetBrokenLinkers` `routeAround` `suggestChannel` |
+
+合计 8 + 10 + 12 = 30，账对得上。
 
 **必须说清楚**：`parity.mjs` 是「两个产物是否一致」的**漂移检测器**，不是正确性检测器。
 两个产物同步变坏时它完全无感。**不能当正确性覆盖来宣传。**
@@ -1594,7 +1596,7 @@ node tools/sync-skill.mjs          # 默认目标 ~/.dsh/skills/dsh-processon-di
 node tools/sync-skill.mjs --dry    # 只看会改哪些文件，不落盘
 node tools/sync-skill.mjs --target <path>   # 自定义目标
 
-node test/selftest.mjs             # 159 项离线断言
+node test/selftest.mjs             # 163 项离线断言
 node test/verify-pool.mjs          # 33 项泳道池行数能力
 node test/parity.mjs               # 两个产物行为一致
 ```

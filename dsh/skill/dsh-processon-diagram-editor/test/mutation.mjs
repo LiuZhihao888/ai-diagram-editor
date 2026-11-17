@@ -198,6 +198,37 @@ const MUTATIONS = [
     },
   },
   {
+    // 【为什么要这条】第七轮核验发现：auditSideCard 只被断言"字段名在"，
+    // 把 pass 改成恒 true（有重叠也判合格），159 项全绿。
+    label: 'bridge: auditSideCard 的 pass 恒 true',
+    file: MIN,
+    mutate(s) {
+      const re = /return\{id:r,overlaps:e\.length,list:e,pass:e\.length===0\}/;
+      if (!re.test(s)) return null;
+      return s.replace(re, 'return{id:r,overlaps:e.length,list:e,pass:!0}');
+    },
+  },
+  {
+    label: 'bridge: auditSideCard 的 overlaps 恒 0',
+    file: MIN,
+    mutate(s) {
+      const re = /s>1&&u>1&&e\.push\(\{id:o,ix:Math\.round\(s\),iy:Math\.round\(u\)\}\)/;
+      if (!re.test(s)) return null;
+      return s.replace(re, '0');
+    },
+  },
+  {
+    // 【为什么要这条】原来只有"该跳过的跳过了"这一侧，没有"该绕的真的绕了"。
+    // 让整个函数空转，159 项全绿 —— 一个永远不动的 reroute 也满足负向断言。
+    label: 'bridge: rerouteWorstEdges 空转（什么都不做）',
+    file: MIN,
+    mutate(s) {
+      const re = /function Oe\(r\)\{S\(\);var t=r\|\|\{\},a=typeof t\.max=="number"\?t\.max:5/;
+      if (!re.test(s)) return null;
+      return s.replace(re, 'function Oe(r){return{applied:[],skipped:[],scanned:0}}function _dead(r){var t=r||{},a=typeof t.max=="number"?t.max:5');
+    },
+  },
+  {
     label: 'bridge: 斜线裁剪循环不执行（L<4 → L<0）',
     file: MIN,
     mutate(s) {
