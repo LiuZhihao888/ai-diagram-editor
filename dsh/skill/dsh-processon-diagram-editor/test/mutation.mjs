@@ -110,6 +110,25 @@ const MUTATIONS = [
     },
   },
   {
+    label: 'page.mjs: auditDesignExpr 的 tooLong 恒 0',
+    file: PAGE,
+    mutate(s) {
+      const re = /tooLong\.push\(\{[^}]*\}\);/;
+      if (!re.test(s)) return null;
+      return s.replace(re, '/* mutated: tooLong 不再记录 */');
+    },
+  },
+  {
+    label: 'bridge: reflowSpacing 不挪节点（位移恒 0）',
+    file: MIN,
+    mutate(s) {
+      // 语义定位：reflowSpacing 里真正改 x 的那句
+      const re = /M\.props\.x=Math\.round\(M\.props\.x\+h\.shifts\[y\]\)/;
+      if (!re.test(s)) return null;
+      return s.replace(re, 'M.props.x=Math.round(M.props.x)');
+    },
+  },
+  {
     label: 'bridge: 斜线裁剪循环不执行（L<4 → L<0）',
     file: MIN,
     mutate(s) {

@@ -291,7 +291,13 @@ function makeSandbox(shape) {
   const els = shape || {};
   const listeners = {};
   const fake = {
-    Model: { define: { elements: els } },
+    Model: {
+      define: { elements: els },
+      // reflowSpacing 等写操作走这里；记录下来以便断言"到底改没改"
+      updates: [],
+      updateMulti(list) { this.updates.push(list); },
+      update(el) { this.updates.push([el]); },
+    },
     Designer: {
       events: { push() {} },
       scrollShapesToView() {},
@@ -300,7 +306,11 @@ function makeSandbox(shape) {
       setScrollPosition() {},
       repaint() {},
     },
-    Utils: { guid() { return 'g' + Math.random().toString(36).slice(2, 8); } },
+    // clampIntoView / focusRect 需要它；不给的话 getViewBox 会正确抛 VIEWBOX_INVALID
+    Utils: {
+      guid() { return 'g' + Math.random().toString(36).slice(2, 8); },
+      canvasViewBox: shape && shape.__viewBox ? shape.__viewBox : { x: 0, y: 0, w: 1200, h: 800 },
+    },
     MessageSource: {
       executed: [],
       executeMessages(m) { this.executed.push(m); },
@@ -1220,6 +1230,75 @@ ok('【行为】auditDesignExpr 排除装饰元素（泳道/标题/说明条）'
   assert.equal(r.nodes, 1, '只该数到 1 个真实流程节点，实际 ' + r.nodes);
   assert.ok(r.decorSkipped >= 4, '应该跳过 4 个装饰元素（pool/lane/tt_/ov_），实际 ' + r.decorSkipped);
   assert.equal(r.pass, true, '装饰元素不该导致不通过');
+});
+
+
+// ---------------------------------------------------------------- reflowSpacing / clampIntoView 行为断言
+// 【为什么补这两条】第五轮核验指出：
+//   reflowSpacing 的 8 条断言测的是本文件里"复刻"的 planShifts()，不是 bridge 里的真函数。
+//   这是自证测试 —— 复刻件正确不等于实现正确。而这个函数会真的改画布坐标。
+//   clampIntoView 是唯一零行为断言的导出函数，原来那条靠字面特征 maxX<minX 撑着。
+ok('【行为】reflowSpacing dryRun 不写画布，且给出正确位移', () => {
+  const { fake } = makeSandbox({
+    n1: { name: 'process', props: { x: 100, y: 100, w: 132, h: 62 } },
+    n2: { name: 'process', props: { x: 252, y: 100, w: 132, h: 62 } },   // gap = 20 < 80
+  });
+  const r = fake.POBridge.reflowSpacing('', { dryRun: true });
+  assert.equal(r.dryRun, true, 'dryRun 应回显');
+  assert.equal(r.nodes, 2, '应看到 2 个节点');
+  assert.ok(r.moved >= 1, 'gap 20 < 80，应该有节点被挪，实际 moved=' + r.moved);
+  assert.ok(Array.isArray(r.movedIds), '应给出 movedIds');
+  assert.ok(r.movedIds.includes('n2'), '应挪动右侧的 n2，实际 ' + JSON.stringify(r.movedIds));
+  assert.ok(r.gap >= 60, 'gap 应提升到目标值，实际 ' + r.gap);
+  // dryRun 的关键性质：不能真的写画布
+  assert.equal(fake.Model.updates.length, 0, 'dryRun 不能真的写画布');
+});
+
+ok('【行为】reflowSpacing 非 dryRun 时节点坐标必须真的改变', () => {
+  const { fake } = makeSandbox({
+    n1: { name: 'process', props: { x: 100, y: 100, w: 132, h: 62 } },
+    n2: { name: 'process', props: { x: 252, y: 100, w: 132, h: 62 } },   // 原 x=252
+  });
+  const r = fake.POBridge.reflowSpacing('', { dryRun: false });
+  assert.equal(r.dryRun, false, 'dryRun 应回显 false');
+  assert.ok(fake.Model.updates.length >= 1, '非 dryRun 应该真的写画布');
+  // 【关键】必须核对节点真实坐标，不能只看报告的 movedIds。
+  // 变异证明：把 x 的赋值改成不减位移，movedIds 仍包含 n2（它判断的是 shifts 非零）、
+  // gap 仍报 80、maxRight 仍是计划值 —— 只有真实坐标能识破。
+  // 注：bridge 内部 clone 后丢失了 id，只能按坐标变化判断。
+  // 夹具里 n1 在 x=100、n2 在 x=252，只有 n2 该被推。
+  const batch = fake.Model.updates[0];
+  assert.equal(batch.length, 1, '只该推 n2 一个，实际 ' + batch.length);
+  const moved = batch[0];
+  assert.ok(moved.props.x > 252,
+    'n2 的 x 必须真的变大（从 252 往右推），实际 ' + moved.props.x);
+  assert.equal(moved.props.y, 100, 'y 不该变，实际 ' + moved.props.y);
+});
+
+ok('【行为】clampIntoView 越界时必须夹取并标记 clamped', () => {
+  const { fake } = makeSandbox({});
+  const far = fake.POBridge.clampIntoView(99999, 99999, 200, 80);
+  assert.ok(far.x < 99999, 'x 必须被夹小，实际 ' + far.x);
+  assert.ok(far.y < 99999, 'y 必须被夹小，实际 ' + far.y);
+  assert.equal(far.clamped, true, 'clamped 必须为 true');
+  assert.equal(far.requested.x, 99999, 'requested 应保留原请求值');
+  assert.notEqual(far.actual.x, 99999, 'actual 应是夹取后的值');
+});
+
+ok('【行为】clampIntoView 在视口内时不夹取、不标记', () => {
+  const { fake } = makeSandbox({});
+  const okPos = fake.POBridge.clampIntoView(100, 200, 200, 80);
+  assert.equal(okPos.x, 100, '视口内不该挪动 x');
+  assert.equal(okPos.y, 200, '视口内不该挪动 y');
+  assert.equal(okPos.clamped, false, '视口内不该标记 clamped');
+});
+
+ok('【行为】clampIntoView 视口比元素还小时居中兜底', () => {
+  const { fake } = makeSandbox({ __viewBox: { x: 0, y: 0, w: 100, h: 100 } });
+  // 元素 200x80 比视口 100 还宽，maxX < minX，应走居中兜底而不是产生负值乱夹
+  const r = fake.POBridge.clampIntoView(500, 500, 200, 80);
+  assert.ok(isFinite(r.x) && isFinite(r.y), '兜底分支也必须给出有限数');
+  assert.equal(r.clamped, true, '越界应标记 clamped');
 });
 
 // ---------------------------------------------------------------- 汇总

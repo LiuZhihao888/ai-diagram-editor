@@ -1462,6 +1462,20 @@ node test/mutation.mjs    # 测试本身还有没有用
 > 变异证明把 `pass` 改成恒 `false` 也能全绿。
 > 一个永远拒绝验收的审计，和一个永远通过的审计，一样没用。
 
+
+### 已补的行为断言（第五轮核验要求）
+
+`reflowSpacing` 和 `clampIntoView` 之前是自证或零覆盖，现已补上：
+
+| 函数 | 断言要点 |
+|---|---|
+| `reflowSpacing` | dryRun 不写画布 / 非 dryRun 时**节点真实 x 必须变大** |
+| `clampIntoView` | 越界必须夹取并标记 `clamped` / 视口内不动 / 视口过小时居中兜底 |
+
+> 🔴 **踩过的坑**：`reflowSpacing` 的 `movedIds` 和 `maxRight` 都是**改坐标之前算出来的计划值**。
+> 变异证明：把 x 的赋值改成不减位移后，`movedIds` 仍含 n2、`gap` 仍报 80、`maxRight` 仍是 444 ——
+> **只有核对 `updateMulti` 里节点真实的 `props.x` 才能识破。**
+
 ### 关于 `auditDesignExpr` 的夹具
 
 它读文案用的是 `e.textBlock[0].text`，**不是 `e.text`**。
