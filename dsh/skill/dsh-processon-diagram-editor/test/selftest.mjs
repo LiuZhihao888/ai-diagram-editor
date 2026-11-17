@@ -822,9 +822,11 @@ ok('rerouteWorstEdges 漏过竖直段必穿节点的边', () => {
       points: [{ x: 166, y: 300 }, { x: 166, y: 230 }],
     },
   });
+  // 【不能吞异常】原来这里是 catch (e) { return; }，等于把"直接崩"当成通过。
+  // 变异测试证明：让 rerouteWorstEdges 无条件抛异常，137 项全绿。
   let out;
   try { out = fake.POBridge.rerouteWorstEdges({ max: 5, minCross: 1 }); }
-  catch (e) { return; }  // 没有可绕的边也算合理
+  catch (e) { assert.fail('rerouteWorstEdges 不该抛异常：' + e.message); }
   // 如果它改了这个边，就说明没做竖直段校验
   const touched = (out.applied || []).some((v) => v.edge === 'lk');
   if (touched) {
@@ -962,6 +964,102 @@ ok('SKILL.md 记录了试过但失败的思路', () => {
   const md = fs.readFileSync(path.join(SKILL, 'SKILL.md'), 'utf8');
   assert.match(md, /穿越数从 12 涨到 33/, '应记录失败尝试的真实数字');
   assert.match(md, /动节点布局/, '应指出正确解法');
+});
+
+
+// 【补漏】上面的夹具里两端点 y 都 ≠ channelY，所以永远走不到兜底分支。
+// 而"两端点已在通道上"恰恰是真机最常见的情形，必须单独测。
+ok('rerouteEdge 端点已在通道上时折点仍落在通道', () => {
+  const { fake } = makeSandbox({
+    nA: { name: 'process', props: { x: 100, y: 100, w: 132, h: 62 } },
+    nB: { name: 'process', props: { x: 500, y: 300, w: 132, h: 62 } },
+    lk: {
+      name: 'linker', linkerType: 'straight',
+      // 两端点 y 都正好等于即将使用的通道 y=200
+      from: { x: 232, y: 200, angle: 0, id: 'nA' },
+      to: { x: 500, y: 200, angle: 3.14, id: 'nB' },
+      points: [],
+    },
+  });
+  fake.POBridge.rerouteEdge('lk', 200);
+  const msg = fake.MessageSource.executed[0];
+  assert.ok(msg, '应该发出 update');
+  const upd = msg[0].content.shapes[0];
+  assert.ok(Array.isArray(upd.points) && upd.points.length >= 2, '兜底分支也要有折点');
+  upd.points.forEach((p, i) => {
+    assert.equal(p.y, 200, '第 ' + i + ' 个折点必须在通道 y=200 上，实际 ' + p.y);
+  });
+});
+
+// ---------------------------------------------------------------- auditLayoutExpr 行为断言
+// 【为什么必须有这一段】auditLayoutExpr 返回的是「待执行表达式字符串」，
+// 之前所有断言只做 assert.match(表达式, /emptyScope/) —— 从没真正跑过它。
+// 独立核验用变异证明：把斜线检测改回 P1、间距阈值归零、锚点校验恒真、
+// 间距环改成不执行，137 项全绿。而这份表达式正是真机验收判定的唯一依据。
+//
+// 【怎么做】把 auditLayoutExpr 产出的表达式字符串丢进 vm 沙箱跑，
+// 断言它返回的 JSON 数值。这样改坏逻辑就一定红。
+function runAudit(prefix, shape, scopeSub) {
+  const { fake } = makeSandbox(shape);
+  // auditLayoutExpr 内部依赖 POBridge.LAYOUT，所以要先装桥接层
+  const expr = P.auditLayoutExpr(prefix, scopeSub === undefined ? undefined : scopeSub);
+  return JSON.parse(vm.runInContext(expr, vm.createContext(fake), { filename: 'audit.js' }));
+}
+
+// 夹具：斜线从 (166,162) 到 (566,500)，中间 (300,280,60,60) 挡路
+const DIAG_SHAPE = () => ({
+  nA: { name: 'process', props: { x: 100, y: 100, w: 132, h: 62 } },
+  nB: { name: 'process', props: { x: 500, y: 500, w: 132, h: 62 } },
+  nMid: { name: 'process', props: { x: 300, y: 280, w: 60, h: 60 } },
+  lk: {
+    name: 'linker', linkerType: 'straight',
+    from: { x: 166, y: 162, angle: 1.57, id: 'nA' },
+    to: { x: 566, y: 500, angle: -1.57, id: 'nB' },
+    points: [],
+  },
+});
+
+ok('【行为】auditLayoutExpr 必须报出斜线穿节点', () => {
+  const r = runAudit('', DIAG_SHAPE());
+  assert.ok(r.crossings >= 1, '斜线穿 nMid 必须被算进 crossings，实际 ' + r.crossings);
+  assert.equal(r.pass, false, '有穿越就不能 pass');
+  assert.equal(r.emptyScope, false, '有连线就不是空作用域');
+});
+
+ok('【行为】auditLayoutExpr 斜线不穿时 crossings 必须为 0', () => {
+  const shape = DIAG_SHAPE();
+  shape.nMid.props = { x: 300, y: 60, w: 60, h: 60 };   // 挪到斜线上方
+  const r = runAudit('', shape);
+  assert.equal(r.crossings, 0, '不该有穿越，实际 ' + r.crossings);
+});
+
+ok('【行为】auditLayoutExpr 能识别锚点偏离（badAnchor）', () => {
+  const shape = DIAG_SHAPE();
+  shape.lk.from = { x: 160, y: 150, angle: 1.57, id: 'nA' };  // 不在边中点上
+  const r = runAudit('', shape);
+  assert.ok(r.badAnchor >= 1, '锚点偏离必须被算出，实际 ' + r.badAnchor);
+  assert.equal(r.pass, false);
+});
+
+ok('【行为】auditLayoutExpr 锚点合规时 badAnchor 为 0', () => {
+  const r = runAudit('', DIAG_SHAPE());
+  assert.equal(r.badAnchor, 0, '坐标都在边中点上，不该报 badAnchor');
+});
+
+ok('【行为】auditLayoutExpr 间距低于阈值要报 tightGaps', () => {
+  const r = runAudit('', {
+    n1: { name: 'process', props: { x: 100, y: 100, w: 132, h: 62 } },
+    n2: { name: 'process', props: { x: 242, y: 100, w: 132, h: 62 } },  // 间距只有 10
+  });
+  assert.ok(r.tightGaps >= 1, '间隙 10 < 60 必须报，实际 ' + r.tightGaps);
+  assert.equal(r.minGap, 10, 'minGap 应为 10，实际 ' + r.minGap);
+});
+
+ok('【行为】auditLayoutExpr 空作用域必须 pass:false', () => {
+  const r = runAudit('zzz_nonexistent_', DIAG_SHAPE());
+  assert.equal(r.emptyScope, true, '前缀匹配不到应报 emptyScope');
+  assert.equal(r.pass, false, '空作用域绝不能 pass');
+  assert.ok(r.reason, '必须给出 reason');
 });
 
 // ---------------------------------------------------------------- 汇总
