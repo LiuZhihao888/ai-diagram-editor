@@ -1266,12 +1266,15 @@ ok('【行为】reflowSpacing 非 dryRun 时节点坐标必须真的改变', () 
   // 变异证明：把 x 的赋值改成不减位移，movedIds 仍包含 n2（它判断的是 shifts 非零）、
   // gap 仍报 80、maxRight 仍是计划值 —— 只有真实坐标能识破。
   // 注：bridge 内部 clone 后丢失了 id，只能按坐标变化判断。
-  // 夹具里 n1 在 x=100、n2 在 x=252，只有 n2 该被推。
+  // 夹具里 n1 在 x=100(w=132) 即右边界 232、n2 在 x=252，实际 gap = 252-232 = 20。
+  // 目标 gap 是 80，所以位移应该是 80 - 20 = 60，n2 最终 x = 252 + 60 = 312。
+  // 【关键】必须断言精确的 312。变异证明：只写 `> 252` 的话，
+  // 位移恒为 1px、位移翻倍、位移方向反了…… 全都照样通过。
   const batch = fake.Model.updates[0];
   assert.equal(batch.length, 1, '只该推 n2 一个，实际 ' + batch.length);
   const moved = batch[0];
-  assert.ok(moved.props.x > 252,
-    'n2 的 x 必须真的变大（从 252 往右推），实际 ' + moved.props.x);
+  assert.equal(moved.props.x, 312,
+    'n2 应被精确推到 312（gap 20→80，位移 60），实际 ' + moved.props.x);
   assert.equal(moved.props.y, 100, 'y 不该变，实际 ' + moved.props.y);
 });
 
@@ -1294,11 +1297,57 @@ ok('【行为】clampIntoView 在视口内时不夹取、不标记', () => {
 });
 
 ok('【行为】clampIntoView 视口比元素还小时居中兜底', () => {
+  // viewBox 100x100，元素 200x80 —— 元素比视口还宽，maxX < minX，必须走居中兜底。
+  // 【关键】必须断言精确的居中值。-50 和 10 是算出来的，不是随手写的：
+  //   x = vb.x + (vb.w - w) / 2 = 0 + (100 - 200) / 2 = -50
+  //   y = vb.y + (vb.h - h) / 2 = 0 + (100 -  80) / 2 =  10
+  // 变异证明：只断言 isFinite 的话，删掉整个兜底分支、或让兜底返回 0、
+  // 或返回 vb.x，全都照样通过 —— "居中"这两个字一个数都没验。
   const { fake } = makeSandbox({ __viewBox: { x: 0, y: 0, w: 100, h: 100 } });
-  // 元素 200x80 比视口 100 还宽，maxX < minX，应走居中兜底而不是产生负值乱夹
   const r = fake.POBridge.clampIntoView(500, 500, 200, 80);
-  assert.ok(isFinite(r.x) && isFinite(r.y), '兜底分支也必须给出有限数');
+  assert.equal(r.x, -50, 'x 应居中为 -50，实际 ' + r.x);
+  assert.equal(r.y, 10, 'y 应居中为 10，实际 ' + r.y);
   assert.equal(r.clamped, true, '越界应标记 clamped');
+});
+
+
+// ---------------------------------------------------------------- ANCHOR 产物侧校验
+// 之前的 "angle 常量方向正确" 读的是 bridge/pobridge.js 源码。
+// 但真正发到浏览器的是 pobridge.min.js —— 核验证明：把 min 产物里的 ANCHOR 改反，
+// 仓库形态和安装形态的 157 项全部照绿。这条补的是产物侧。
+ok('【行为·产物】ANCHOR 在 min 产物里方向正确（L 在左、R 在右）', () => {
+  const { fake } = makeSandbox({
+    nA: { name: 'process', props: { x: 100, y: 100, w: 200, h: 100 } },
+    nB: { name: 'process', props: { x: 500, y: 100, w: 200, h: 100 } },
+  });
+  // nA 右边界中点 = (300, 150)；nB 左边界中点 = (500, 150)
+  assert.equal(typeof fake.POBridge.ANCHOR, 'object', 'ANCHOR 应该是导出的对象');
+  assert.equal(fake.POBridge.ANCHOR.R, 0, 'R（右）应为 0，实际 ' + fake.POBridge.ANCHOR.R);
+  assert.equal(fake.POBridge.ANCHOR.L, Math.PI, 'L（左）应为 PI，实际 ' + fake.POBridge.ANCHOR.L);
+  assert.equal(fake.POBridge.ANCHOR.T, -Math.PI / 2, 'T（上）应为 -PI/2，实际 ' + fake.POBridge.ANCHOR.T);
+  assert.equal(fake.POBridge.ANCHOR.B, Math.PI / 2, 'B（下）应为 PI/2，实际 ' + fake.POBridge.ANCHOR.B);
+});
+
+ok('【行为·产物】computeEdgeGeometry 产出的 from.angle 与所在边一致', () => {
+  const { fake } = makeSandbox({
+    nA: { name: 'process', props: { x: 100, y: 100, w: 200, h: 100 } },
+    nB: { name: 'process', props: { x: 500, y: 100, w: 200, h: 100 } },
+  });
+  assert.equal(typeof fake.POBridge.computeEdgeGeometry, 'function', 'computeEdgeGeometry 应存在');
+  // 签名是 computeEdgeGeometry(fromProps, toProps, opts)，不是两个 id
+  const g = fake.POBridge.computeEdgeGeometry(
+    { x: 100, y: 100, w: 200, h: 100 },
+    { x: 500, y: 100, w: 200, h: 100 },
+  );
+  assert.ok(g && g.from && g.to, '应返回 from/to');
+  // nA 的右边界中点 (300,150)，从它出发朝向右边 → 入射角应为 R = 0
+  assert.equal(g.from.x, 300, 'from.x 应在 nA 右边界，实际 ' + g.from.x);
+  assert.equal(g.from.y, 150, 'from.y 应在 nA 垂直中点，实际 ' + g.from.y);
+  assert.equal(g.from.angle, 0, 'from.angle 应为 R=0，实际 ' + g.from.angle);
+  // nB 的左边界中点 (500,150)，入射方向为 L = PI
+  assert.equal(g.to.x, 500, 'to.x 应在 nB 左边界，实际 ' + g.to.x);
+  assert.equal(g.to.y, 150, 'to.y 应在 nB 垂直中点，实际 ' + g.to.y);
+  assert.equal(g.to.angle, Math.PI, 'to.angle 应为 L=PI，实际 ' + g.to.angle);
 });
 
 // ---------------------------------------------------------------- 汇总

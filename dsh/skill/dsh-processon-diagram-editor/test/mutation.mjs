@@ -122,10 +122,79 @@ const MUTATIONS = [
     label: 'bridge: reflowSpacing 不挪节点（位移恒 0）',
     file: MIN,
     mutate(s) {
-      // 语义定位：reflowSpacing 里真正改 x 的那句
       const re = /M\.props\.x=Math\.round\(M\.props\.x\+h\.shifts\[y\]\)/;
       if (!re.test(s)) return null;
       return s.replace(re, 'M.props.x=Math.round(M.props.x)');
+    },
+  },
+  {
+    // 【为什么要这条】只断言"x 变大"的话，位移恒 1px 也能过。
+    // 必须断言精确值 312，才能验出位移量算错。
+    label: 'bridge: reflowSpacing 位移量恒 1px',
+    file: MIN,
+    mutate(s) {
+      const re = /M\.props\.x=Math\.round\(M\.props\.x\+h\.shifts\[y\]\)/;
+      if (!re.test(s)) return null;
+      return s.replace(re, 'M.props.x=Math.round(M.props.x+1)');
+    },
+  },
+  {
+    label: 'bridge: reflowSpacing 位移量翻倍',
+    file: MIN,
+    mutate(s) {
+      const re = /M\.props\.x=Math\.round\(M\.props\.x\+h\.shifts\[y\]\)/;
+      if (!re.test(s)) return null;
+      return s.replace(re, 'M.props.x=Math.round(M.props.x+2*h.shifts[y])');
+    },
+  },
+  {
+    // 【为什么要这条】只断言 isFinite 的话，删掉整个兜底分支也能过。
+    // 必须断言精确的居中值 -50 / 10。
+    label: 'bridge: clampIntoView 删掉居中兜底分支',
+    file: MIN,
+    mutate(s) {
+      const re = /l=i<f\?e\.x\+\(e\.w-a\)\/2:Math\.max\(f,Math\.min\(r,i\)\)/;
+      if (!re.test(s)) return null;
+      return s.replace(re, 'l=Math.max(f,Math.min(r,i))');
+    },
+  },
+  {
+    label: 'bridge: clampIntoView 兜底返回 0（不居中）',
+    file: MIN,
+    mutate(s) {
+      const re = /l=i<f\?e\.x\+\(e\.w-a\)\/2/;
+      if (!re.test(s)) return null;
+      return s.replace(re, 'l=i<f?0');
+    },
+  },
+  {
+    label: 'bridge: clampIntoView 的 clamped 恒 false',
+    file: MIN,
+    mutate(s) {
+      const re = /clamped:Math\.abs\(p-r\)>1\|\|Math\.abs\(c-t\)>1/;
+      if (!re.test(s)) return null;
+      return s.replace(re, 'clamped:false');
+    },
+  },
+  {
+    // 【为什么要这条】之前只断言 bridge/pobridge.js 源码里的 ANCHOR，
+    // 但真正发到浏览器的是 pobridge.min.js。核验证明：
+    // 改反 min 产物里的 ANCHOR，157 项全部照绿 —— P2 在产物侧零防护。
+    label: 'bridge: min 产物 ANCHOR L/R 互换（还原 P2）',
+    file: MIN,
+    mutate(s) {
+      const re = /var Y=\{L:Math\.PI,T:-Math\.PI\/2,R:0,B:Math\.PI\/2\}/;
+      if (!re.test(s)) return null;
+      return s.replace(re, 'var Y={L:0,T:-Math.PI/2,R:Math.PI,B:Math.PI/2}');
+    },
+  },
+  {
+    label: 'bridge: min 产物 ANCHOR T/B 互换',
+    file: MIN,
+    mutate(s) {
+      const re = /var Y=\{L:Math\.PI,T:-Math\.PI\/2,R:0,B:Math\.PI\/2\}/;
+      if (!re.test(s)) return null;
+      return s.replace(re, 'var Y={L:Math.PI,T:Math.PI/2,R:0,B:-Math.PI/2}');
     },
   },
   {
