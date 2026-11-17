@@ -647,3 +647,56 @@ export function auditLayoutExpr(prefix, pageIndex) {
     '})(' + JSON.stringify(prefix || '') + ', ' + scope + ')',
   ].join('\n');
 }
+
+/**
+ * 设计规范校验 —— 把「好不好看」变成可测的数字。
+ * 对应 SKILL.md「五之八、视觉设计规范」。
+ */
+export function auditDesignExpr(prefix, pageIndex) {
+  var scopeArg = (typeof pageIndex === 'number')
+    ? JSON.stringify('_p' + pageIndex + '_')
+    : 'null';
+  var prefixArg = JSON.stringify(prefix || '');
+  return [
+    '(function(prefix, scopeSub){',
+    "  if (typeof window.POBridge !== 'object') return JSON.stringify({error:'NO_BRIDGE'});",
+    '  var IDEAL_W = 132, IDEAL_H = 62, MAX_TEXT = 16, WIDE = 200;',
+    '  var E = window.Model.define.elements, nodes = [], id;',
+    '  function inScope(x) {',
+    '    if (prefix && x.indexOf(prefix) !== 0) return false;',
+    '    if (scopeSub && x.indexOf(scopeSub) < 0) return false;',
+    '    return true;',
+    '  }',
+    '  for (id in E) {',
+    '    if (!inScope(id)) continue;',
+    '    var e = E[id];',
+    '    if (!e || !e.props) continue;',
+    '    if (/pool|lane|linker/i.test(e.name || "")) continue;',
+    '    if (/_hdr_|_note_|_card|_band/.test(id)) continue;',
+    '    var p = e.props;',
+    '    if (p.w > 1000) continue;',
+    '    var txt = "";',
+    '    try { if (e.textBlock && e.textBlock[0] && e.textBlock[0].text) txt = String(e.textBlock[0].text); } catch (x) {}',
+    '    nodes.push({ id: id, w: p.w, h: p.h, text: txt });',
+    '  }',
+    '  var offSize = [], tooLong = [], tooWide = [];',
+    '  for (var i = 0; i < nodes.length; i++) {',
+    '    var n = nodes[i];',
+    '    if (Math.abs(n.w - IDEAL_W) > 24 || Math.abs(n.h - IDEAL_H) > 20) {',
+    '      offSize.push({ id: n.id.slice(-24), w: Math.round(n.w), h: Math.round(n.h) });',
+    '    }',
+    '    if (n.text.length > MAX_TEXT) tooLong.push({ id: n.id.slice(-24), len: n.text.length, text: n.text.slice(0, 20) });',
+    '    if (n.w > WIDE) tooWide.push({ id: n.id.slice(-24), w: Math.round(n.w) });',
+    '  }',
+    '  var total = nodes.length;',
+    '  var pass = offSize.length <= Math.ceil(total * 0.25) && tooLong.length === 0 && tooWide.length === 0;',
+    '  return JSON.stringify({',
+    '    nodes: total,',
+    '    offSize: offSize.length, offSizeList: offSize.slice(0, 6),',
+    '    tooLong: tooLong.length, tooLongList: tooLong.slice(0, 6),',
+    '    tooWide: tooWide.length, tooWideList: tooWide.slice(0, 6),',
+    '    ideal: IDEAL_W + "x" + IDEAL_H, maxText: MAX_TEXT, pass: pass',
+    '  });',
+    '})(' + prefixArg + ', ' + scopeArg + ')',
+  ].join('\n');
+}

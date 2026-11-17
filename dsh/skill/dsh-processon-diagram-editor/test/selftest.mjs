@@ -685,6 +685,47 @@ ok('桥接层导出 detectOverlaps / LAYOUT', () => {
   assert.ok(b.includes('LAYOUT: LAYOUT'));
 });
 
+// ---------------------------------------------------------------- 设计规范 auditDesignExpr
+for (const name of ['auditDesignExpr']) {
+  ok('设计规范片段可编译: ' + name, () => syntaxOk(P[name]('ai_', 0)));
+  ok('设计规范片段带 NO_BRIDGE 守卫: ' + name, () => {
+    assert.match(P[name]('ai_'), /NO_BRIDGE/);
+  });
+}
+ok('auditDesignExpr 传 pageIndex 时做页内作用域', () => {
+  const e = P.auditDesignExpr('ai_', 9);
+  assert.match(e, /_p9_/, '应包含 _p9_ 子串');
+  syntaxOk(e);
+});
+ok('auditDesignExpr 使用 132x62 主力尺寸', () => {
+  const e = P.auditDesignExpr('ai_');
+  assert.match(e, /IDEAL_W = 132/);
+  assert.match(e, /IDEAL_H = 62/);
+});
+ok('auditDesignExpr 文案上限 16 字', () => {
+  assert.match(P.auditDesignExpr('ai_'), /MAX_TEXT = 16/);
+});
+ok('auditDesignExpr 报告四项指标', () => {
+  const e = P.auditDesignExpr('ai_');
+  for (const k of ['offSize', 'tooLong', 'tooWide', 'pass']) {
+    assert.match(e, new RegExp(k + ':'), '缺指标 ' + k);
+  }
+});
+ok('auditDesignExpr 排除泳道/卡片/备注（只查真正的流程节点）', () => {
+  const e = P.auditDesignExpr('ai_');
+  assert.match(e, /pool\|lane\|linker/, '应排除泳道和连线');
+  assert.match(e, /_hdr_\|_note_\|_card\|_band/, '应排除装饰元素');
+});
+ok('SKILL.md 记录的设计数字与桥接层一致', () => {
+  const md = fs.readFileSync(path.join(SKILL, 'SKILL.md'), 'utf8');
+  // 五之八 里写的核心数字必须真实存在
+  assert.match(md, /132×62/, '应写主力尺寸 132×62');
+  assert.match(md, /8–12 字/, '应写文案长度区间');
+  assert.match(md, /行高 140|140px/, '应写泳道行高 140');
+  // 布局预算 的算例必须算得对
+  assert.match(md, /9 × 132 \+ 8 × 80 = 1188 \+ 640 = 1828/, '9 节点算例应对');
+});
+
 // ---------------------------------------------------------------- 汇总
 console.log('');
 if (fails.length) {
