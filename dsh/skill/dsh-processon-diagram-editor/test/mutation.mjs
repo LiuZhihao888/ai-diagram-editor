@@ -122,9 +122,9 @@ const MUTATIONS = [
     label: 'bridge: reflowSpacing 不挪节点（位移恒 0）',
     file: MIN,
     mutate(s) {
-      const re = /M\.props\.x=Math\.round\(M\.props\.x\+h\.shifts\[y\]\)/;
+      const re = /[\w$]+\.props\.x=Math\.round\([\w$]+\.props\.x\+[\w$]+\.shifts\[[\w$]+\]\)/;
       if (!re.test(s)) return null;
-      return s.replace(re, 'M.props.x=Math.round(M.props.x)');
+      return s.replace(re, (hit) => hit.replace(/\+[\w$]+\.shifts\[[\w$]+\]/, ''));
     },
   },
   {
@@ -133,18 +133,18 @@ const MUTATIONS = [
     label: 'bridge: reflowSpacing 位移量恒 1px',
     file: MIN,
     mutate(s) {
-      const re = /M\.props\.x=Math\.round\(M\.props\.x\+h\.shifts\[y\]\)/;
+      const re = /[\w$]+\.props\.x=Math\.round\([\w$]+\.props\.x\+[\w$]+\.shifts\[[\w$]+\]\)/;
       if (!re.test(s)) return null;
-      return s.replace(re, 'M.props.x=Math.round(M.props.x+1)');
+      return s.replace(re, (hit) => hit.replace(/\+[\w$]+\.shifts\[[\w$]+\]/, '+1'));
     },
   },
   {
     label: 'bridge: reflowSpacing 位移量翻倍',
     file: MIN,
     mutate(s) {
-      const re = /M\.props\.x=Math\.round\(M\.props\.x\+h\.shifts\[y\]\)/;
+      const re = /[\w$]+\.props\.x=Math\.round\([\w$]+\.props\.x\+[\w$]+\.shifts\[[\w$]+\]\)/;
       if (!re.test(s)) return null;
-      return s.replace(re, 'M.props.x=Math.round(M.props.x+2*h.shifts[y])');
+      return s.replace(re, (hit) => hit.replace(/\+([\w$]+\.shifts\[[\w$]+\])/, '+2*$1'));
     },
   },
   {
@@ -153,7 +153,8 @@ const MUTATIONS = [
     label: 'bridge: clampIntoView 删掉居中兜底分支',
     file: MIN,
     mutate(s) {
-      const re = /l=i<f\?e\.x\+\(e\.w-a\)\/2:Math\.max\(f,Math\.min\(r,i\)\)/;
+      // 语义定位：不写死压缩变量名，重新压缩后仍能命中
+      const re = /\w+=\w+<\w+\?\w+\.x\+\(\w+\.w-\w+\)\/2:Math\.max\(\w+,Math\.min\(\w+,\w+\)\)/;
       if (!re.test(s)) return null;
       return s.replace(re, 'l=Math.max(f,Math.min(r,i))');
     },
@@ -162,7 +163,7 @@ const MUTATIONS = [
     label: 'bridge: clampIntoView 兜底返回 0（不居中）',
     file: MIN,
     mutate(s) {
-      const re = /l=i<f\?e\.x\+\(e\.w-a\)\/2/;
+      const re = /\w+=\w+<\w+\?\w+\.x\+\(\w+\.w-\w+\)\/2/;
       if (!re.test(s)) return null;
       return s.replace(re, 'l=i<f?0');
     },
@@ -171,9 +172,9 @@ const MUTATIONS = [
     label: 'bridge: clampIntoView 的 clamped 恒 false',
     file: MIN,
     mutate(s) {
-      const re = /clamped:Math\.abs\(p-r\)>1\|\|Math\.abs\(c-t\)>1/;
+      const re = /clamped:Math\.abs\([\w$]+-[\w$]+\)>1\|\|Math\.abs\([\w$]+-[\w$]+\)>1/;
       if (!re.test(s)) return null;
-      return s.replace(re, 'clamped:false');
+      return s.replace(re, 'clamped:!1');
     },
   },
   {
@@ -183,18 +184,21 @@ const MUTATIONS = [
     label: 'bridge: min 产物 ANCHOR L/R 互换（还原 P2）',
     file: MIN,
     mutate(s) {
-      const re = /var Y=\{L:Math\.PI,T:-Math\.PI\/2,R:0,B:Math\.PI\/2\}/;
+      // 语义定位：任意变量名，只要值是这套锚点常量
+      const re = /var ([\w$]+)=\{L:0,T:Math\.PI\/2,R:Math\.PI,B:3\*Math\.PI\/2\}/;
       if (!re.test(s)) return null;
-      return s.replace(re, 'var Y={L:0,T:-Math.PI/2,R:Math.PI,B:Math.PI/2}');
+      // 保留原变量名，避免改名后重复定义导致语法错
+      return s.replace(re, (hit) => hit.replace('L:0', 'L:Math.PI').replace('R:Math.PI', 'R:0'));
     },
   },
   {
     label: 'bridge: min 产物 ANCHOR T/B 互换',
     file: MIN,
     mutate(s) {
-      const re = /var Y=\{L:Math\.PI,T:-Math\.PI\/2,R:0,B:Math\.PI\/2\}/;
+      // 语义定位：任意变量名，只要值是这套锚点常量
+      const re = /var ([\w$]+)=\{L:0,T:Math\.PI\/2,R:Math\.PI,B:3\*Math\.PI\/2\}/;
       if (!re.test(s)) return null;
-      return s.replace(re, 'var Y={L:Math.PI,T:Math.PI/2,R:0,B:-Math.PI/2}');
+      return s.replace(re, (hit) => hit.replace('T:Math.PI/2', 'T:3*Math.PI/2').replace('B:3*Math.PI/2', 'B:Math.PI/2'));
     },
   },
   {
@@ -203,16 +207,16 @@ const MUTATIONS = [
     label: 'bridge: auditSideCard 的 pass 恒 true',
     file: MIN,
     mutate(s) {
-      const re = /return\{id:r,overlaps:e\.length,list:e,pass:e\.length===0\}/;
+      const re = /return\{id:([\w$]+),overlaps:([\w$]+)\.length,list:\2,pass:\2\.length===0\}/;
       if (!re.test(s)) return null;
-      return s.replace(re, 'return{id:r,overlaps:e.length,list:e,pass:!0}');
+      return s.replace(re, (hit, a, b) => 'return{id:' + a + ',overlaps:' + b + '.length,list:' + b + ',pass:!0}');
     },
   },
   {
     label: 'bridge: auditSideCard 的 overlaps 恒 0',
     file: MIN,
     mutate(s) {
-      const re = /s>1&&u>1&&e\.push\(\{id:o,ix:Math\.round\(s\),iy:Math\.round\(u\)\}\)/;
+      const re = /\w+>1&&\w+>1&&\w+\.push\(\{id:\w+,ix:Math\.round\(\w+\),iy:Math\.round\(\w+\)\}\)/;
       if (!re.test(s)) return null;
       return s.replace(re, '0');
     },
@@ -223,9 +227,19 @@ const MUTATIONS = [
     label: 'bridge: rerouteWorstEdges 空转（什么都不做）',
     file: MIN,
     mutate(s) {
-      const re = /function Oe\(r\)\{S\(\);var t=r\|\|\{\},a=typeof t\.max=="number"\?t\.max:5/;
-      if (!re.test(s)) return null;
-      return s.replace(re, 'function Oe(r){return{applied:[],skipped:[],scanned:0}}function _dead(r){var t=r||{},a=typeof t.max=="number"?t.max:5');
+      // 语义定位：捕获函数名，在原处把整个函数体换成"什么都不做"
+      // 语义定位：函数头 = function <name>(<arg>){ <call>(); var <x>=<arg>||{}
+      // 变量名在压缩后不固定（实测为 function Oe(r){k();var e=r||{}），所以全部通配。
+      const re = /function ([\w$]+)\(([\w$]+)\)\{[\w$]+\(\);var [\w$]+=\2\|\|\{\}/;
+      const mt = s.match(re);
+      if (!mt) return null;
+      const fn = mt[1];
+      const start = mt.index;
+      // 函数体到 return{applied:...,...,scanned:...}} 结束（压缩后无换行，需按括号配对找）
+      const tail = /return\{applied:[^}]*?,skipped:[^}]*?,scanned:[^}]*?\}\}/.exec(s.slice(start));
+      if (!tail) return null;
+      const end = start + tail.index + tail[0].length;
+      return s.slice(0, start) + 'function ' + fn + '(r){return{applied:[],skipped:[],scanned:0}}' + s.slice(end);
     },
   },
   {
@@ -234,9 +248,14 @@ const MUTATIONS = [
     label: 'bridge: rerouteWorstEdges 永不 applied（全塞 skipped）',
     file: MIN,
     mutate(s) {
-      const re = /try\{fe\(l,h\.channelY\),i\.push\(\{edge:l,before:o\[l\],channelY:h\.channelY\}\)\}/;
+      // 语义定位：把"应用成功"的 push 目标换成 skipped 的 push
+      // 语义定位：try{ <fn>(<edge>,<h>.channelY),<arr>.push({edge:<e>,before:<o[f]>,channelY:<h>.channelY})}
+      // 实测压缩形态：try{he(f,h.channelY),i.push({edge:f,before:o[f],channelY:h.channelY})}
+      const re = /try\{([\w$]+)\(([\w$]+),([\w$]+)\.channelY\),([\w$]+)\.push\(\{edge:\2,before:[^,}]+,channelY:\3\.channelY\}\)\}/;
       if (!re.test(s)) return null;
-      return s.replace(re, 'try{fe(l,h.channelY),s.push({edge:l,reason:"never applied"})}');
+      // 把 applied 的 push 改成全局 __SK 收集器（不是 skipped 那个空数组，避免引用未定义变量）
+      return s.replace(re, (hit, fn, edge, h, arr) =>
+        'try{' + fn + '(' + edge + ',' + h + '.channelY),window.__MUT.push({edge:' + edge + ',before:0})}');
     },
   },
   {
@@ -245,9 +264,12 @@ const MUTATIONS = [
     mutate(s) {
       // 语义定位：Liang-Barsky 循环的特征是 'L=0;L<4;L++)if(Math.abs(P[L])<1e-9)'
       // 用这个组合定位，不依赖前面的变量声明顺序（那些压缩后可能重命名）。
-      const re = /L=0;L<4;L\+\+\)if\(Math\.abs\(P\[L\]\)<1e-9\)/;
-      if (!re.test(s)) return null;
-      return s.replace(re, 'L=0;L<0;L++)if(Math.abs(P[L])<1e-9)');
+      // 语义定位：特征串是 "=0;<4;++" 紧跟 Math.abs(...)<1e-9，变量名任意
+      const re = /(\w+)=0;\1<4;\1\+\+\)if\(Math\.abs\(\w+\[\1\]\)<1e-9\)/;
+      const mt = s.match(re);
+      if (!mt) return null;
+      const v = mt[1];
+      return s.replace(re, v + '=0;' + v + '<0;' + v + '++)if(Math.abs(' + v + '[' + v + '])<1e-9)');
     },
   },
 ];

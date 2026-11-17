@@ -467,17 +467,22 @@ ok('书签产物含锚点能力', () => {
     assert.ok(dec.includes(k), '书签缺: ' + k);
   }
 });
-ok('angle 常量方向正确（实测：L=PI T=-PI/2 R=0 B=PI/2）', () => {
-  // 【实测校正】真机 155 个端点统计：L=π(58) / R=0(53) / B=π/2(22) / T=-π/2(22)。
-  // ProcessOn 的 angle 是「朝内的入射方向」，旧断言（L=0,R=PI）方向整体反了，
-  // 会让 computeEdgeGeometry 算出斜线 —— 这正是 11 条斜边的来源。
+ok('angle 常量方向正确（实测：L=0 T=PI/2 R=PI B=3PI/2）', () => {
+  // 【实测校正 2】把 ANCHOR 改回 {L:0,T:PI/2,R:PI,B:3PI/2} 后，
+  // 用真实元素 id 扫了 4 个边 x 4 个边 = 16 个组合，全部满足
+  //   「首段垂直该边 + 末段垂直该边 + 首段朝外」= 16/16。
+  // 并且用户手绘的 yhUELGdssE549967（from.angle=4.7124=3PI/2, to.angle=3.1416=PI）
+  // 用这套值可以逐字节复现成 -91,1486。
+  //
+  // 旧断言（L:PI, T:-PI/2, R:0, B:PI/2）来自一次错误的统计：
+  // 那次统计的是 to.angle（入边），却被当成 ANCHOR 用。
+  // 数学上 -PI/2 与 3PI/2 等价，但产品的分支判据看数值区间，
+  // 传 -PI/2 会从错的一侧出边，逼出 3~4 个折点且末段不垂直。
   const b = bridgeCode();
-  assert.match(b, /L:\s*Math\.PI/, 'L 应为 PI');
-  assert.match(b, /R:\s*0/, 'R 应为 0');
-  assert.match(b, /T:\s*-\s*Math\.PI\s*\/\s*2/, 'T 应为 -PI/2');
-  assert.match(b, /B:\s*Math\.PI\s*\/\s*2/, 'B 应为 PI/2');
-  // 反向校验：不能同时存在旧的那套
-  assert.doesNotMatch(b, /ANCHOR\s*=\s*\{\s*L:\s*0,/, '不能退回旧的错误顺序');
+  assert.match(b, /ANCHOR\s*=\s*\{\s*L:\s*0\b/, 'L 应为 0');
+  assert.match(b, /R:\s*Math\.PI\b/, 'R 应为 PI');
+  assert.match(b, /T:\s*Math\.PI\s*\/\s*2/, 'T 应为 PI/2');
+  assert.match(b, /B:\s*\(?\s*3\s*\*\s*Math\.PI\s*\)?\s*\/\s*2/, 'B 应为 3PI/2');
 });
 
 
@@ -1322,10 +1327,10 @@ ok('【行为·产物】ANCHOR 在 min 产物里方向正确（L 在左、R 在�
   });
   // nA 右边界中点 = (300, 150)；nB 左边界中点 = (500, 150)
   assert.equal(typeof fake.POBridge.ANCHOR, 'object', 'ANCHOR 应该是导出的对象');
-  assert.equal(fake.POBridge.ANCHOR.R, 0, 'R（右）应为 0，实际 ' + fake.POBridge.ANCHOR.R);
-  assert.equal(fake.POBridge.ANCHOR.L, Math.PI, 'L（左）应为 PI，实际 ' + fake.POBridge.ANCHOR.L);
-  assert.equal(fake.POBridge.ANCHOR.T, -Math.PI / 2, 'T（上）应为 -PI/2，实际 ' + fake.POBridge.ANCHOR.T);
-  assert.equal(fake.POBridge.ANCHOR.B, Math.PI / 2, 'B（下）应为 PI/2，实际 ' + fake.POBridge.ANCHOR.B);
+  assert.equal(fake.POBridge.ANCHOR.L, 0, 'L（左）应为 0，实际 ' + fake.POBridge.ANCHOR.L);
+  assert.equal(fake.POBridge.ANCHOR.T, Math.PI / 2, 'T（上）应为 PI/2，实际 ' + fake.POBridge.ANCHOR.T);
+  assert.equal(fake.POBridge.ANCHOR.R, Math.PI, 'R（右）应为 PI，实际 ' + fake.POBridge.ANCHOR.R);
+  assert.equal(fake.POBridge.ANCHOR.B, (3 * Math.PI) / 2, 'B（下）应为 3PI/2，实际 ' + fake.POBridge.ANCHOR.B);
 });
 
 ok('【行为·产物】computeEdgeGeometry 产出的 from.angle 与所在边一致', () => {
@@ -1343,11 +1348,13 @@ ok('【行为·产物】computeEdgeGeometry 产出的 from.angle 与所在边一
   // nA 的右边界中点 (300,150)，从它出发朝向右边 → 入射角应为 R = 0
   assert.equal(g.from.x, 300, 'from.x 应在 nA 右边界，实际 ' + g.from.x);
   assert.equal(g.from.y, 150, 'from.y 应在 nA 垂直中点，实际 ' + g.from.y);
-  assert.equal(g.from.angle, 0, 'from.angle 应为 R=0，实际 ' + g.from.angle);
+  assert.equal(g.from.angle, Math.PI, 'from.angle 应为 R=PI，实际 ' + g.from.angle);
   // nB 的左边界中点 (500,150)，入射方向为 L = PI
   assert.equal(g.to.x, 500, 'to.x 应在 nB 左边界，实际 ' + g.to.x);
   assert.equal(g.to.y, 150, 'to.y 应在 nB 垂直中点，实际 ' + g.to.y);
-  assert.equal(g.to.angle, Math.PI, 'to.angle 应为 L=PI，实际 ' + g.to.angle);
+  // 入边也用该边自己的朝外角：nB 的左边 L -> ANCHOR[L] = 0
+  // （真值依据：用户手绘 yhUELGdssE549967 是 B 出 R 入，ENTRY=ANCHOR 时逐字节复现）
+  assert.equal(g.to.angle, 0, 'to.angle 应为 L=0，实际 ' + g.to.angle);
 });
 
 

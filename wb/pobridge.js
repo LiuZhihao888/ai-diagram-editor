@@ -322,7 +322,24 @@
   // 【实测校正】ProcessOn 的 angle 表示「朝内的入射方向」，不是朝外法线。
 // 真机实测 155 个端点：L=π(58次) / R=0(53次) / B=π/2(22次) / T=-π/2(22次)。
 // 旧值（L:0,T:π/2,R:π,B:3π/2）方向整体反了，会让 computeEdgeGeometry 算出斜线。
-  var ANCHOR = { L: Math.PI, T: -Math.PI / 2, R: 0, B: Math.PI / 2 };
+  // 边 -> 该边"朝外"的方向角（逆时针，0=左 / PI/2=上 / PI=右 / 3PI/2=下）。
+  // 这是 ProcessOn 自己的编码：与鼠标拖拽吸附产出的 angle 完全一致。
+  // 实测依据（真实元素 id，16 个 side 组合全通过）：
+  //   from.angle = ANCHOR[出边]        to.angle = ANCHOR[对边]
+  // 反例（旧值 {L:PI,T:-PI/2,R:0,B:PI/2}）：数学上等价但数值不同，
+  //   产品的分支判据看数值区间，-PI/2 与 3PI/2 会被当成不同方向，
+  //   结果是从错的一侧出边，逼出 3~4 个折点、末段不垂直。
+  var ANCHOR = { L: 0, T: Math.PI / 2, R: Math.PI, B: (3 * Math.PI) / 2 };
+  // 入边也用该边自己的朝外角（ENTRY === ANCHOR）。
+  // 实测（真实元素 id，用户手绘 yhUELGdssE549967 作真值）：
+  //   n3 底中 -> n4 右中，B 出 R 入
+  //     to.angle = ANCHOR[R] = PI          -> 1 个折点 -91,1486  ★与手绘逐字节一致
+  //     to.angle = ANCHOR[L] = 0（对边）   -> 3 个折点
+  //   n1 右中 -> n2 左中，R 出 L 入
+  //     ENTRY=ANCHOR      -> 2 折点
+  //     ENTRY=ANCHOR[对边] -> 4 折点
+  // 结论：出入边用同一套 ANCHOR 即可，不需要单独的"对边"映射。
+  var ENTRY = { L: 0, T: Math.PI / 2, R: Math.PI, B: (3 * Math.PI) / 2 };
 
   function anchorPoints(p) {
     return {
@@ -333,8 +350,60 @@
     };
   }
 
+  // 判断某个候选出边是否"正对着"某个障碍节点：
+  // 从出边中点沿外法线投射一条射线，若障碍节点与这条射线相交，就认为被挡住。
+  // maxDist：射线最远只看到这么远。
+  // 不设上界时，射线会一路穿过目标节点打到它后面的节点，造成假"被挡"。
+  // 实测踩坑（n4->n5，两节点上下相邻仅 22px）：B 出边穿过 n5 后正对 n6，
+  // 被判"被挡"，于是从 B 改成 L，凭空多绕 1 个折点。
+  function sideBlockedBy(a, side, obstacle, pad, maxDist) {
+    if (!obstacle || !obstacle.w) return false;
+    var p = pad == null ? 12 : pad;
+    var pt = anchorPoints(a)[side];
+    var rect = { x: obstacle.x - p, y: obstacle.y - p, w: obstacle.w + p * 2, h: obstacle.h + p * 2 };
+    var dir = {
+      L: { x: -1, y: 0 }, R: { x: 1, y: 0 },
+      T: { x: 0, y: -1 }, B: { x: 0, y: 1 }
+    }[side];
+    // 射线：pt + t*dir, t>0，与矩形相交判定（slab 法）
+    var tmin = 0, tmax = Infinity;
+    if (Math.abs(dir.x) < 1e-9) {
+      if (pt.x < rect.x || pt.x > rect.x + rect.w) return false;
+    } else {
+      var t1 = (rect.x - pt.x) / dir.x, t2 = (rect.x + rect.w - pt.x) / dir.x;
+      tmin = Math.max(tmin, Math.min(t1, t2));
+      tmax = Math.min(tmax, Math.max(t1, t2));
+    }
+    if (Math.abs(dir.y) < 1e-9) {
+      if (pt.y < rect.y || pt.y > rect.y + rect.h) return false;
+    } else {
+      var t3 = (rect.y - pt.y) / dir.y, t4 = (rect.y + rect.h - pt.y) / dir.y;
+      tmin = Math.max(tmin, Math.min(t3, t4));
+      tmax = Math.min(tmax, Math.max(t3, t4));
+    }
+    if (!(tmax > tmin + 1)) return false;
+    // 命中点必须落在"出边到目标之间"的距离内
+    if (maxDist != null && isFinite(maxDist) && tmin > maxDist) return false;
+    return true;
+  }
+
   // 按相对位置自动挑选一对最自然的出入边（优先直达，其次阶梯）
-  function pickSides(a, b) {
+  //
+  // 【被上游挡住时改从底边走】默认的"垂直位移占主导就上下出入"是对的，
+  // 但如果选中的那条边正对着一个上游节点（流程来路），从那里出去等于
+  // 原路往回走，会逼出多余的折返。这时改从底边（B）出，绕开它。
+  // 找出矩形 p 上「正对着 other」的那条边。
+  // 入边必须迎向来源，否则末段会从节点背面扎进来（箭头不垂直）。
+  // 例：n3 在 n4 的右上 -> n4 的入边应为 R（右边迎向 n3），而不是 T。
+  function facingSide(p, other) {
+    var cx = p.x + p.w / 2, cy = p.y + p.h / 2;
+    var ocx = other.x + other.w / 2, ocy = other.y + other.h / 2;
+    var dx = ocx - cx, dy = ocy - cy;
+    if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? 'R' : 'L';
+    return dy >= 0 ? 'B' : 'T';
+  }
+
+  function pickSides(a, b, ctx) {
     var acx = a.x + a.w / 2, acy = a.y + a.h / 2;
     var bcx = b.x + b.w / 2, bcy = b.y + b.h / 2;
     var dx = bcx - acx, dy = bcy - acy;
@@ -349,17 +418,77 @@
       if (bcy >= acy) return { from: 'B', to: 'T' };
       return { from: 'T', to: 'B' };
     }
-    // 垂直位移占主导 -> 下/上出，上/下入
+    // 按几何倾向给出首选，再用"是否被上游挡住"校验并纠正
+    var prefer;
     if (Math.abs(dy) >= Math.abs(dx) * 0.55) {
-      if (dy > 0) return { from: 'B', to: 'T' };
-      return { from: 'T', to: 'B' };
+      prefer = dy > 0 ? { from: 'B', to: 'T' } : { from: 'T', to: 'B' };
+    } else {
+      prefer = dx >= 0 ? { from: 'R', to: 'L' } : { from: 'L', to: 'R' };
     }
-    // 否则水平
-    return dx >= 0 ? { from: 'R', to: 'L' } : { from: 'L', to: 'R' };
+
+    // 校验：出边正对着某个障碍节点时，从那里出去等于原路往回走，
+    // 会逼出一条绕远路的折线。此时改走"垂直"那条通畅的边。
+    if (ctx && ctx.obstacles && ctx.obstacles.length) {
+      // 出边的"合理长度"：从该边中点到目标中心的正交距离 + 一个节点宽的余量。
+      // 超过这个距离的障碍不再算挡路（它已经在目标后面了）。
+      var blockedBy = function (side) {
+        var ap2 = anchorPoints(a)[side];
+        var ortho = (side === 'L' || side === 'R')
+          ? Math.abs(bcx - ap2.x)
+          : Math.abs(bcy - ap2.y);
+        // 只看到目标为止：超过正交距离的障碍已经在目标另一侧，不该算挡路。
+        // 早先加了"一个节点宽"的余量，结果 n5 后面的 n6 又把 B 出边挡住了。
+        var limit = ortho;
+        for (var i = 0; i < ctx.obstacles.length; i++) {
+          if (sideBlockedBy(a, side, ctx.obstacles[i], ctx.pad, limit)) return true;
+        }
+        return false;
+      };
+      if (blockedBy(prefer.from)) {
+        // 候选优先级：先试"垂直于首选方向"的那条（水平受阻 -> 改垂直；反之亦然）
+        var altList = (prefer.from === 'L' || prefer.from === 'R')
+          ? [bcy >= acy ? 'B' : 'T', bcy >= acy ? 'T' : 'B']
+          : [dx >= 0 ? 'R' : 'L', dx >= 0 ? 'L' : 'R'];
+        // 入边 = b 迎向 a 的那条边（不是出边的对边！）
+        var entrySide = facingSide(b, a);
+        for (var k = 0; k < altList.length; k++) {
+          var s = altList[k];
+          if (!blockedBy(s)) return { from: s, to: entrySide };
+        }
+        // 全被挡：退回几何首选
+      }
+    }
+    // 未受阻：选入边。
+    // 规则（两条都用真实画布验证过，互相不冲突）：
+    //   a) 垂直位移占主导，且 b 在 a 的正下/正上方附近
+    //      -> 用配对边 B->T / T->B，产品走直线拐角
+    //      实测 n4->n5 (dx=25.5 dy=92)：配对 2 折点；facingSide 给 L->T 会从左边绕 3 折点
+    //   b) 否则用「b 迎向 a」那条边
+    //      实测 n3->n4 (dx=-324 dy=92)：配对 B->T 给 4 折点；
+    //      facingSide 给 B->R 才是 1 折点，且与用户手绘逐字节一致
+    var paired = { L: 'R', R: 'L', T: 'B', B: 'T' }[prefer.from];
+    var facing = facingSide(b, a);
+    var isPaired = (facing === paired);
+    var entry = isPaired ? paired : facingSide(b, a);
+    // 垂直主导时，若 b 的水平偏移很小（同一列的上下关系），强制用配对边
+    var verticalish = Math.abs(dy) >= Math.abs(dx) * 0.55;
+    var nearSameColumn = Math.abs(dx) <= Math.max(a.w, b.w) * 0.5;
+    if (verticalish && nearSameColumn) entry = paired;
+    return { from: prefer.from, to: entry };
   }
 
   // 根据两端锚点生成拐角表
-  function buildPoints(fs, ts) {
+  //
+  // 【为什么不再自己算】旧版这里手写了一个简化 A*/L 形路由，不看 angle、
+  // 不看上下游拓扑，实测产出的折线会绕 4 个弯、末端与所连的边不垂直
+  // （箭头因此歪着扎进节点）。ProcessOn 自己的 Utils.getLinkerPoints
+  // 就是用户手动拖线时用的那套路由，实测能逐点复现手画结果。
+  // 所以：只要有运行时，就交给它算；只有在离线单测（无运行时）时才用兜底。
+  function buildPoints(fs, ts, probe) {
+    var viaProduct = tryProductRoute(probe);
+    if (viaProduct) return viaProduct;
+
+    // —— 以下为无运行时的离线兜底（保持原有 L 形行为，仅供 vm 单测） ——
     var fx = fs.pt.x, fy = fs.pt.y, tx = ts.pt.x, ty = ts.pt.y;
     var hExit = (fs.side === 'L' || fs.side === 'R');
     var hEntry = (ts.side === 'L' || ts.side === 'R');
@@ -377,25 +506,105 @@
     return hExit ? [{ x: tx, y: fy }] : [{ x: fx, y: ty }];
   }
 
+  // 调产品路由；任何异常都降级为 null（走兜底），绝不吞掉成"看似成功"
+  function tryProductRoute(probe) {
+    if (!probe) return null;
+    if (!global.Utils || typeof global.Utils.getLinkerPoints !== 'function') return null;
+    try {
+      var got = global.Utils.getLinkerPoints(probe, false, true);
+      if (!got || !got.length) return null;
+      // 产品返回点必须都是有限数，否则视为无效
+      for (var i = 0; i < got.length; i++) {
+        if (!isFinite(got[i].x) || !isFinite(got[i].y)) return null;
+      }
+      // 去掉相邻重复点与共线中间点。
+      // 实测退化：两个节点同轴正对时，产品会返回两个完全相同的点
+      // （如 (5205,6035) 与 (5205,6035)），画出来多一个空折点。
+      var clean = [];
+      for (var k = 0; k < got.length; k++) {
+        var q = got[k];
+        var prev = clean[clean.length - 1];
+        if (prev && Math.abs(prev.x - q.x) < 0.01 && Math.abs(prev.y - q.y) < 0.01) continue;
+        clean.push({ x: q.x, y: q.y });
+      }
+      return clean.length ? clean : got;
+    } catch (e) {
+      return null;
+    }
+  }
+
   function r2(v) { return Math.round(v * 100) / 100; }
 
   // 计算一条连线的完整几何（纯函数，可单测）
+  // 收集"可能挡住出边"的节点：只取与起点同一个连通区域的邻居节点。
+  // 不传 obstacles 时，退化为"用全图节点"，开销可控（图元数通常 < 300）。
+  function collectObstacles(fromProps, toProps, excludeIds) {
+    if (!global.Model || !global.Model.define || !global.Model.define.elements) return [];
+    var els = global.Model.define.elements;
+    var out = [];
+    var seen = {};
+    (excludeIds || []).forEach(function (id) { if (id) seen[id] = 1; });
+    Object.keys(els).forEach(function (id) {
+      if (seen[id]) return;
+      var e = els[id];
+      if (!e || !e.props) return;
+      if (e.name === 'linker') return;
+      if (e.attribute && e.attribute.container) return;
+      // 泳道 / 分组 / 容器一律不算障碍。
+      // 实测踩坑：图3 的泳道矩形 (-500,1440,504x92) 把 n4 整个包住，
+      // 被当成障碍后 n4->n5 的出边被判"被挡"，从 B 改成 L，凭空多绕 1 个折点。
+      if (/lane|pool|group|swimlane/i.test(String(id))) return;
+      if (e.category && /lane|pool|group/i.test(String(e.category))) return;
+      var p = e.props;
+      if (typeof p.w !== 'number' || typeof p.h !== 'number') return;
+      if (p.w > 1000 || p.h > 1000) return;
+      out.push({ x: p.x, y: p.y, w: p.w, h: p.h, id: id });
+    });
+    return out;
+  }
+
   function computeEdgeGeometry(fromProps, toProps, opts) {
     var o = opts || {};
-    var sides = (o.fromSide && o.toSide)
-      ? { from: o.fromSide, to: o.toSide }
-      : pickSides(fromProps, toProps);
+    var fromId = o.fromId || o.from || null;
+    var toId = o.toId || o.to || null;
+    var sides;
+    if (o.fromSide && o.toSide) {
+      sides = { from: o.fromSide, to: o.toSide };
+    } else {
+      // 障碍用来判断"这条出边是不是正对着上游节点"。
+      // 没有它，pickSides 会从靠近上游的那一侧出去，逼出一条绕远路的折线。
+      var obstacles = o.obstacles || collectObstacles(fromProps, toProps, [fromId, toId]);
+      sides = pickSides(fromProps, toProps, { obstacles: obstacles, pad: o.obstaclePad });
+    }
     var ap = anchorPoints(fromProps), bp = anchorPoints(toProps);
     var fs = { side: sides.from, pt: ap[sides.from] };
     var ts = { side: sides.to, pt: bp[sides.to] };
-    var pts = buildPoints(fs, ts);
+
+    // 组装一条"探测用"连线，交给产品路由算折点。
+    // 注意：angle 必须先定（产品的路由依赖它判断出入方向），
+    // 顺序是 pickSides -> angle -> getLinkerPoints，不能反过来。
+    // 产品路由必须拿到元素 id：不带 id 时它会退化成"重复折点"，
+    // 末段不垂直于边（实测：带 id 得 3 个折点且末段垂直；不带 id 得两个重复点）。
+    // 兼容两种调用方式：{fromId,toId}（新）与 {from,to}（createEdge 一直这么传）。
+    var probeFromId = o.fromId || o.from || null;
+    var probeToId = o.toId || o.to || null;
+    var probe = {
+      name: 'linker',
+      linkerType: 'broken',
+      from: { x: r2(fs.pt.x), y: r2(fs.pt.y), angle: ANCHOR[fs.side], id: probeFromId },
+      to: { x: r2(ts.pt.x), y: r2(ts.pt.y), angle: ENTRY[ts.side], id: probeToId },
+      points: []
+    };
+    var pts = buildPoints(fs, ts, probe);
+
     return {
       from: { x: r2(fs.pt.x), y: r2(fs.pt.y), angle: ANCHOR[fs.side] },
-      to: { x: r2(ts.pt.x), y: r2(ts.pt.y), angle: ANCHOR[ts.side] },
+      to: { x: r2(ts.pt.x), y: r2(ts.pt.y), angle: ENTRY[ts.side] },
       points: pts.map(function (p) { return { x: r2(p.x), y: r2(p.y) }; }),
       fromSide: sides.from,
       toSide: sides.to,
-      anchorAngle: { from: ANCHOR[sides.from], to: ANCHOR[sides.to] }
+      anchorAngle: { from: ANCHOR[sides.from], to: ANCHOR[ts.side] },
+      routedBy: (global.Utils && typeof global.Utils.getLinkerPoints === 'function') ? 'product' : 'fallback'
     };
   }
 
