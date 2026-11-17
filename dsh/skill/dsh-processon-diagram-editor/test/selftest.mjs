@@ -697,19 +697,20 @@ ok('auditDesignExpr 传 pageIndex 时做页内作用域', () => {
   assert.match(e, /_p9_/, '应包含 _p9_ 子串');
   syntaxOk(e);
 });
-ok('auditDesignExpr 使用 132x62 主力尺寸', () => {
+ok('auditDesignExpr 不再硬编码尺寸基准（改为参考输出）', () => {
   const e = P.auditDesignExpr('ai_');
-  assert.match(e, /IDEAL_W = 132/);
-  assert.match(e, /IDEAL_H = 62/);
+  assert.match(e, /sizeTally/, '应输出尺寸分布供参考');
+  assert.match(e, /decorSkipped/, '应报告排除了多少装饰元素');
 });
 ok('auditDesignExpr 文案上限 16 字', () => {
   assert.match(P.auditDesignExpr('ai_'), /MAX_TEXT = 16/);
 });
-ok('auditDesignExpr 报告四项指标', () => {
+ok('auditDesignExpr 报告三项指标', () => {
   const e = P.auditDesignExpr('ai_');
-  for (const k of ['offSize', 'tooLong', 'tooWide', 'pass']) {
+  for (const k of ['tooLong', 'tooWide', 'pass']) {
     assert.match(e, new RegExp(k + ':'), '缺指标 ' + k);
   }
+  assert.ok(e.indexOf('offSize') < 0, 'offSize 已移除（误报太多）');
 });
 ok('auditDesignExpr 排除泳道/卡片/备注（只查真正的流程节点）', () => {
   const e = P.auditDesignExpr('ai_');
@@ -724,6 +725,59 @@ ok('SKILL.md 记录的设计数字与桥接层一致', () => {
   assert.match(md, /行高 140|140px/, '应写泳道行高 140');
   // 布局预算 的算例必须算得对
   assert.match(md, /9 × 132 \+ 8 × 80 = 1188 \+ 640 = 1828/, '9 节点算例应对');
+});
+
+// ---------------------------------------------------------------- 连线绕行（reroute）
+ok('桥接层导出 suggestChannel / rerouteEdge / rerouteWorstEdges', () => {
+  const b = bridgeCode();
+  for (const k of ['suggestChannel', 'rerouteEdge', 'rerouteWorstEdges']) {
+    assert.ok(b.includes(k + ': ' + k), '缺导出 ' + k);
+  }
+});
+ok('rerouteEdge 保持端点锚点（不动 from/to 的 y）', () => {
+  const b = bridgeCode();
+  const i = b.indexOf('function rerouteEdge');
+  const seg = b.slice(i, i + 1400);
+  assert.doesNotMatch(seg, /upd\.from\.y\s*=/, '不能改 from.y');
+  assert.doesNotMatch(seg, /upd\.to\.y\s*=/, '不能改 to.y');
+  assert.match(seg, /upd\.points\s*=/, '应设置 points');
+});
+ok('rerouteWorstEdges 调用了竖直段校验', () => {
+  const b = bridgeCode();
+  const i = b.indexOf('function rerouteWorstEdges');
+  const seg = b.slice(i, i + 1600);
+  assert.match(seg, /verticalSegBlocked/, '必须校验竖直段，否则会穿节点');
+});
+ok('verticalSegBlocked 排除泳道/连线/超大元素', () => {
+  const b = bridgeCode();
+  const i = b.indexOf('function verticalSegBlocked');
+  const seg = b.slice(i, i + 1200);
+  assert.match(seg, /pool\|lane\|linker/);
+  assert.match(seg, /p\.w > 1000/);
+});
+ok('auditLayoutExpr 按 name 识别连线，不再用 _lk_ 前缀', () => {
+  const e = P.auditLayoutExpr('ai_');
+  assert.ok(e.indexOf('"_lk_"') < 0, '旧版会漏掉手工画的连线');
+  assert.match(e, /linker/i, '应按 name 判定');
+});
+ok('auditLayoutExpr 报告 edges 数（用于识别静默跳过）', () => {
+  assert.match(P.auditLayoutExpr('ai_'), /edges:/);
+});
+ok('auditDesignExpr 排除装饰元素（标题/泳道标签/说明条）', () => {
+  const e = P.auditDesignExpr('ai_');
+  assert.match(e, /DECOR/);
+  assert.match(e, /\^lb_\|\^tt_\|\^ov_/, '应排除 lb_/tt_/ov_ 前缀');
+});
+ok('auditDesignExpr 把尺寸作参考而非判据', () => {
+  const e = P.auditDesignExpr('ai_');
+  assert.match(e, /sizeTally/, '应输出尺寸分布供参考');
+  assert.doesNotMatch(e, /IDEAL_W\s*=/, '不应再有硬编码理想宽度');
+});
+ok('SKILL.md 记录了两条 reroute 安全铁律', () => {
+  const md = fs.readFileSync(path.join(SKILL, 'SKILL.md'), 'utf8');
+  assert.match(md, /端点必须留在节点边缘中点/);
+  assert.match(md, /水平通道干净 ≠ 能绕/);
+  assert.match(md, /7 是真的，0 是假的/, '应保留实测教训');
 });
 
 // ---------------------------------------------------------------- 汇总

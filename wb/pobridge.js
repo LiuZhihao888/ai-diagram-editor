@@ -542,6 +542,148 @@
     return res;
   }
 
+  // ---------- 连线绕行（rerouteEdge）----------
+  // 【为什么需要它】长距离回边（如「报废分支」从最右回到最左）如果只取
+  // 中点一个折点，连线会横穿中间所有节点。实测 AE 系统现状：f5_bk 跨 1616px
+  // 穿过 5 个节点。updateNode 不支持改 points，所以要单独一个方法。
+  //
+  // 【怎么用】先 suggestChannel(edgeId) 拿到推荐通道 y，人工确认不撞节点后
+  // 再 rerouteEdge(edgeId, channelY)。
+  // 检查「从端点到通道」的竖直段是否穿节点
+  function verticalSegBlocked(edgeId, channelY) {
+    var E = global.Model.define.elements, g = E[edgeId];
+    if (!g || !g.from || !g.to) return { blocked: false, hits: [] };
+    var hits = [], id;
+    var segs = [
+      { x: g.from.x, y1: g.from.y, y2: channelY },
+      { x: g.to.x, y1: g.to.y, y2: channelY }
+    ];
+    for (id in E) {
+      var el = E[id];
+      if (!el || !el.props) continue;
+      if (/pool|lane|linker/i.test(el.name || '')) continue;
+      if (id === g.from.id || id === g.to.id) continue;
+      var p = el.props;
+      if (p.w > 1000) continue;
+      for (var s = 0; s < segs.length; s++) {
+        var q = segs[s];
+        if (Math.abs(q.y1 - q.y2) < 0.5) continue;
+        var ya = Math.min(q.y1, q.y2), yb = Math.max(q.y1, q.y2);
+        if (q.x > p.x + 2 && q.x < p.x + p.w - 2 && yb > p.y + 2 && ya < p.y + p.h - 2) {
+          hits.push(id);
+        }
+      }
+    }
+    return { blocked: hits.length > 0, hits: hits.slice(0, 4) };
+  }
+
+  function suggestChannel(edgeId, opts) {
+    ensureRuntime();
+    var o = opts || {};
+    var E = global.Model.define.elements, g = E[edgeId];
+    if (!g || !/linker/i.test(g.name || '')) throw new Error('不是连线: ' + edgeId);
+    if (!g.from || !g.to) throw new Error('连线缺少端点: ' + edgeId);
+
+    // 收集这条线跨越区间内的所有节点
+    var x1 = Math.min(g.from.x, g.to.x), x2 = Math.max(g.from.x, g.to.x);
+    var boxes = [], id;
+    for (id in E) {
+      var el = E[id];
+      if (!el || !el.props) continue;
+      if (/pool|lane|linker/i.test(el.name || '')) continue;
+      if (id === g.from.id || id === g.to.id) continue;
+      var p = el.props;
+      if (p.w > 1000) continue;
+      if (p.x + p.w < x1 || p.x > x2) continue;  // 不在横向区间内
+      boxes.push({ id: id, x: p.x, y: p.y, w: p.w, h: p.h });
+    }
+    if (!boxes.length) return { edge: edgeId, channelY: null, reason: '区间内没有阻挡节点' };
+
+    // 候选通道：从起点行到终点行之间的所有空隙
+    var cands = [];
+    var fromY = g.from.y, toY = g.to.y;
+    // 上方候选：所有阻挡节点的顶边往上 12px
+    var tops = {}, bots = {};
+    boxes.forEach(function (b) { tops[Math.round(b.y)] = 1; bots[Math.round(b.y + b.h)] = 1; });
+    Object.keys(tops).forEach(function (y) { cands.push({ y: +y - 12, kind: 'above' }); });
+    Object.keys(bots).forEach(function (y) { cands.push({ y: +y + 12, kind: 'below' }); });
+    cands.push({ y: Math.round(fromY), kind: 'fromRow' });
+    cands.push({ y: Math.round(toY), kind: 'toRow' });
+
+    // 打分：穿越数最少 + 偏离端点行最少
+    var best = null;
+    for (var c = 0; c < cands.length; c++) {
+      var cy = cands[c].y;
+      var hits = 0;
+      for (var b2 = 0; b2 < boxes.length; b2++) {
+        var bx = boxes[b2];
+        if (cy >= bx.y && cy <= bx.y + bx.h) hits++;
+      }
+      var dist = Math.abs(cy - fromY) + Math.abs(cy - toY);
+      var score = hits * 10000 + dist;
+      if (!best || score < best.score) best = { channelY: cy, hits: hits, score: score, kind: cands[c].kind };
+    }
+    return { edge: edgeId, channelY: best.channelY, blockHits: best.hits,
+             kind: best.kind, candidates: cands.length, blockers: boxes.length };
+  }
+
+  function rerouteEdge(edgeId, channelY) {
+    ensureRuntime();
+    var E = global.Model.define.elements, e = E[edgeId];
+    if (!e || !/linker/i.test(e.name || '')) throw new Error('不是连线: ' + edgeId);
+    if (!e.from || !e.to) throw new Error('连线缺少端点: ' + edgeId);
+    if (typeof channelY !== 'number') throw new Error('需要 channelY');
+    // 【关键】端点必须留在节点边缘中点（锚点），不能挪到通道上。
+    // 挪端点会让锚点脱离边缘（实测 badAnchor 从 0 飙到 20），
+    // 正确做法：端点不动，只让中间折点走通道，形成"出边→竖直段→通道→竖直段→入边"。
+    var upd = JSON.parse(JSON.stringify(e));
+    var pts = [];
+    // 起点若不在通道上，先竖直走到通道（保持起点 x）
+    if (Math.abs(e.from.y - channelY) > 0.5) pts.push({ x: e.from.x, y: channelY });
+    // 终点若不在通道上，从通道竖直走到终点
+    if (Math.abs(e.to.y - channelY) > 0.5) pts.push({ x: e.to.x, y: channelY });
+    if (!pts.length) pts.push({ x: e.from.x, y: channelY }, { x: e.to.x, y: channelY });
+    // 折点按从起点到终点的顺序排列
+    if (pts.length === 2 && Math.abs(e.from.x - pts[0].x) > 0.5) { /* 保持原序 */ }
+    upd.points = pts;
+    global.MessageSource.executeMessages(
+      [{ action: 'update', content: { shapes: [upd], updates: [upd] } }], true);
+    if (global.Designer && global.Designer.events) {
+      global.Designer.events.push('resetBrokenLinker');
+    }
+    return { id: edgeId, rerouted: true, channelY: channelY, points: upd.points };
+  }
+
+  // 批量：给所有穿越数超阈值的连线推荐并应用通道
+  function rerouteWorstEdges(opts) {
+    ensureRuntime();
+    var o = opts || {};
+    var maxApply = typeof o.max === 'number' ? o.max : 5;
+    var minCross = typeof o.minCross === 'number' ? o.minCross : 3;
+    var res = detectCrossings('');
+    var byEdge = {};
+    (res.list || []).forEach(function (v) { byEdge[v.edge] = (byEdge[v.edge] || 0) + 1; });
+    var ranked = Object.keys(byEdge).sort(function (a, b) { return byEdge[b] - byEdge[a]; });
+    var applied = [], skippedList = [];
+    for (var i = 0; i < ranked.length && applied.length < maxApply; i++) {
+      var eid = ranked[i];
+      if (byEdge[eid] < minCross) break;
+      var sg = suggestChannel(eid);
+      if (sg.channelY === null || sg.blockHits > 0) { skippedList.push({ edge: eid, reason: sg.blockHits > 0 ? '找不到干净通道' : sg.reason }); continue; }
+      // 【关键】水平通道干净还不够：从端点到通道的竖直段也不能穿节点。
+      // 实测 f4_b1: from.y=1727 要走到通道 1439，途中穿过 n3/n4/n5。
+      var vBad = verticalSegBlocked(eid, sg.channelY);
+      if (vBad.blocked) { skippedList.push({ edge: eid, reason: '竖直段穿过 ' + vBad.hits.join(',') }); continue; }
+      try {
+        rerouteEdge(eid, sg.channelY);
+        applied.push({ edge: eid, before: byEdge[eid], channelY: sg.channelY });
+      } catch (err) {
+        skippedList.push({ edge: eid, reason: String(err.message).slice(0, 60) });
+      }
+    }
+    return { applied: applied, skipped: skippedList, scanned: ranked.length };
+  }
+
   // ---------- 间距重排（reflowSpacing）----------
   // 【为什么需要它】相邻节点「边到边」间隙太小时，连线标签（38~47px 宽）会盖住
   // 整条线，视觉上线就「断了/被挤了」。实测：间隙 20px 时标签比线还长。
@@ -1241,6 +1383,9 @@
     listEdges: listEdges,
     resetBrokenLinkers: resetBrokenLinkers,
     detectCrossings: detectCrossings,
+    suggestChannel: suggestChannel,
+    rerouteEdge: rerouteEdge,
+    rerouteWorstEdges: rerouteWorstEdges,
     routeAround: routeAround,
     autoRouteAround: autoRouteAround,
     reflowSpacing: reflowSpacing,

@@ -601,7 +601,7 @@ export function auditLayoutExpr(prefix, pageIndex) {
     '  var edgeCount = 0, skipped = 0;',
     '  for (id in E) {',
     '    if (!inScope(id)) continue;',
-    '    if (id.indexOf("_lk_") < 0) continue;',
+    '    if (!/linker/i.test((E[id].name||""))) continue;',
     '    var g = E[id];',
     '    if (!g || !g.from || !g.to) { skipped++; continue; }',
     '    if (!nodes[g.from.id] || !nodes[g.to.id]) { skipped++; continue; }',
@@ -652,6 +652,18 @@ export function auditLayoutExpr(prefix, pageIndex) {
  * 设计规范校验 —— 把「好不好看」变成可测的数字。
  * 对应 SKILL.md「五之八、视觉设计规范」。
  */
+/**
+ * 设计规范校验 —— 只检查「流程节点」，不管标题/泳道标签/说明条。
+ *
+ * 为什么不做尺寸基准判定：一张图可能由多张手绘子图拼成，
+ * 各子图尺寸体系不同（实测 AE 系统现状：110x70 / 127x74 / 124x36 并存）。
+ * 强行套单一基准会产生大量误报（实测 92/123 误报）。
+ * 所以尺寸只作为「参考信息」输出，不作为 pass 判据。
+ *
+ * 真正的判据只有两条，都是无争议的：
+ *   1. 文案超长（> MAX_TEXT 字）—— 该拆节点或移到备注
+ *   2. 节点被硬拉宽（> WIDE）—— 说明在靠加宽塞文字，而不是靠换行
+ */
 export function auditDesignExpr(prefix, pageIndex) {
   var scopeArg = (typeof pageIndex === 'number')
     ? JSON.stringify('_p' + pageIndex + '_')
@@ -660,8 +672,10 @@ export function auditDesignExpr(prefix, pageIndex) {
   return [
     '(function(prefix, scopeSub){',
     "  if (typeof window.POBridge !== 'object') return JSON.stringify({error:'NO_BRIDGE'});",
-    '  var IDEAL_W = 132, IDEAL_H = 62, MAX_TEXT = 16, WIDE = 200;',
-    '  var E = window.Model.define.elements, nodes = [], id;',
+    '  var MAX_TEXT = 16, WIDE = 200;',
+    '  // 这些是装饰元素，不是流程节点',
+    '  var DECOR = /pool|lane|linker|header|title|band|note|card/i;',
+    '  var E = window.Model.define.elements, nodes = [], decor = 0, id;',
     '  function inScope(x) {',
     '    if (prefix && x.indexOf(prefix) !== 0) return false;',
     '    if (scopeSub && x.indexOf(scopeSub) < 0) return false;',
@@ -671,31 +685,31 @@ export function auditDesignExpr(prefix, pageIndex) {
     '    if (!inScope(id)) continue;',
     '    var e = E[id];',
     '    if (!e || !e.props) continue;',
-    '    if (/pool|lane|linker/i.test(e.name || "")) continue;',
-    '    if (/_hdr_|_note_|_card|_band/.test(id)) continue;',
+    '    var isDecor = DECOR.test(e.name || "") || /_hdr_|_note_|_card|_band|_bd|^lb_|^tt_|^ov_/.test(id);',
     '    var p = e.props;',
-    '    if (p.w > 1000) continue;',
+    '    if (isDecor || p.w > 1000 || !(p.w > 20 && p.h > 10)) { decor++; continue; }',
     '    var txt = "";',
     '    try { if (e.textBlock && e.textBlock[0] && e.textBlock[0].text) txt = String(e.textBlock[0].text); } catch (x) {}',
     '    nodes.push({ id: id, w: p.w, h: p.h, text: txt });',
     '  }',
-    '  var offSize = [], tooLong = [], tooWide = [];',
+    '  var tally = {}, k;',
+    '  for (var q = 0; q < nodes.length; q++) {',
+    '    k = Math.round(nodes[q].w) + "x" + Math.round(nodes[q].h);',
+    '    tally[k] = (tally[k] || 0) + 1;',
+    '  }',
+    '  var tooLong = [], tooWide = [];',
     '  for (var i = 0; i < nodes.length; i++) {',
     '    var n = nodes[i];',
-    '    if (Math.abs(n.w - IDEAL_W) > 24 || Math.abs(n.h - IDEAL_H) > 20) {',
-    '      offSize.push({ id: n.id.slice(-24), w: Math.round(n.w), h: Math.round(n.h) });',
-    '    }',
-    '    if (n.text.length > MAX_TEXT) tooLong.push({ id: n.id.slice(-24), len: n.text.length, text: n.text.slice(0, 20) });',
-    '    if (n.w > WIDE) tooWide.push({ id: n.id.slice(-24), w: Math.round(n.w) });',
+    '    if (n.text.length > MAX_TEXT) tooLong.push({ id: String(n.id).slice(-24), len: n.text.length, text: n.text.slice(0, 20) });',
+    '    if (n.w > WIDE) tooWide.push({ id: String(n.id).slice(-24), w: Math.round(n.w) });',
     '  }',
     '  var total = nodes.length;',
-    '  var pass = offSize.length <= Math.ceil(total * 0.25) && tooLong.length === 0 && tooWide.length === 0;',
+    '  var pass = tooLong.length === 0 && tooWide.length === 0;',
     '  return JSON.stringify({',
-    '    nodes: total,',
-    '    offSize: offSize.length, offSizeList: offSize.slice(0, 6),',
+    '    nodes: total, decorSkipped: decor,',
     '    tooLong: tooLong.length, tooLongList: tooLong.slice(0, 6),',
     '    tooWide: tooWide.length, tooWideList: tooWide.slice(0, 6),',
-    '    ideal: IDEAL_W + "x" + IDEAL_H, maxText: MAX_TEXT, pass: pass',
+    '    sizeTally: tally, maxText: MAX_TEXT, pass: pass',
     '  });',
     '})(' + prefixArg + ', ' + scopeArg + ')',
   ].join('\n');
