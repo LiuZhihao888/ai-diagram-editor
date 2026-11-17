@@ -61,11 +61,19 @@ pushd "%TARGET%"
 node test\selftest.mjs
 set SELFTEST=%errorlevel%
 if %SELFTEST%==0 node test\parity.mjs >nul 2>&1
+if %SELFTEST%==0 (
+    node test\mutation.mjs >nul 2>&1
+    if errorlevel 1 (
+        echo       [警告] 变异门禁未通过 —— 测试可能已失去防护作用
+    ) else (
+        echo       变异门禁通过（测试确实能抓到 bug）
+    )
+)
 popd
 if not %SELFTEST%==0 (
     echo       [警告] 离线自检未通过（可能没装 Node.js，不影响使用）
 ) else (
-    echo       129 项离线断言通过
+    echo       152 项离线断言通过
 )
 
 echo.

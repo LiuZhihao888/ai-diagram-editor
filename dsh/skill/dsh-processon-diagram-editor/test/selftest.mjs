@@ -1062,6 +1062,166 @@ ok('【行为】auditLayoutExpr 空作用域必须 pass:false', () => {
   assert.ok(r.reason, '必须给出 reason');
 });
 
+
+// 【最重要的正向对照】上面 6 条全是"assert pass === false"。
+// 变异 Y1 证明：把 pass 改成恒 false，144 项照样全绿 ——
+// 一个永远拒绝验收的审计，和一个永远通过的审计，测试同样抓不住。
+// 必须有一张「完全合规的图」，要求它 pass === true。
+ok('【行为·正向对照】完全合规的图必须 pass:true', () => {
+  const r = runAudit('', {
+    n1: { name: 'process', props: { x: 100, y: 100, w: 132, h: 62 } },
+    n2: { name: 'process', props: { x: 400, y: 100, w: 132, h: 62 } },  // 间距 168 >= 60
+    // 右锚点 -> 左锚点，水平直达，不穿任何节点
+    lk: {
+      name: 'linker', linkerType: 'straight',
+      from: { x: 232, y: 131, angle: 0, id: 'n1' },
+      to: { x: 400, y: 131, angle: Math.PI, id: 'n2' },
+      points: [],
+    },
+  });
+  assert.equal(r.badAnchor, 0, '锚点应合规');
+  assert.equal(r.crossings, 0, '不该有穿越');
+  assert.equal(r.overlaps, 0, '不该有重叠');
+  assert.equal(r.lkSkipped, 0, '不该有跳过');
+  assert.equal(r.emptyScope, false, '有连线，不是空作用域');
+  assert.ok(r.minGap >= 60, 'minGap 应 >= 60，实际 ' + r.minGap);
+  assert.equal(r.pass, true,
+    '**完全合规的图必须 pass:true** —— 否则说明某个判据恒假。实际 ' + JSON.stringify(r));
+});
+
+ok('【行为】auditLayoutExpr 必须报出节点重叠', () => {
+  const r = runAudit('', {
+    // 两个节点重叠 40px
+    n1: { name: 'process', props: { x: 100, y: 100, w: 132, h: 62 } },
+    n2: { name: 'process', props: { x: 192, y: 100, w: 132, h: 62 } },
+    lk: {
+      name: 'linker', linkerType: 'straight',
+      from: { x: 166, y: 162, angle: 1.57, id: 'n1' },
+      to: { x: 258, y: 162, angle: -1.57, id: 'n2' },
+      points: [],
+    },
+  });
+  assert.ok(r.overlaps >= 1, '重叠必须被算出，实际 ' + r.overlaps);
+  assert.ok(r.overlapSamples.length >= 1, '应给出重叠样例');
+  assert.equal(r.pass, false, '有重叠就不能 pass');
+});
+
+ok('【行为】auditLayoutExpr 必须报出 lkSkipped（缺端点的连线）', () => {
+  const r = runAudit('', {
+    n1: { name: 'process', props: { x: 100, y: 100, w: 132, h: 62 } },
+    n2: { name: 'process', props: { x: 400, y: 100, w: 132, h: 62 } },
+    // 这条连线缺 to —— 会被跳过，必须计入 lkSkipped
+    lkBad: {
+      name: 'linker', linkerType: 'straight',
+      from: { x: 232, y: 131, angle: 0, id: 'n1' },
+      points: [],
+    },
+  });
+  assert.ok(r.lkSkipped >= 1,
+    '缺端点的连线必须计入 lkSkipped（否则 badAnchor 不可信），实际 ' + r.lkSkipped);
+  assert.equal(r.pass, false, '有跳过就不能 pass');
+});
+
+// 单独验证 pass 表达式的每个判据都能独立否决（防止某个判据被删掉没人发现）
+ok('【行为】pass 的每个判据都能独立否决', () => {
+  // 基线：合规
+  const make = (override) => Object.assign({
+    n1: { name: 'process', props: { x: 100, y: 100, w: 132, h: 62 } },
+    n2: { name: 'process', props: { x: 400, y: 100, w: 132, h: 62 } },
+    lk: {
+      name: 'linker', linkerType: 'straight',
+      from: { x: 232, y: 131, angle: 0, id: 'n1' },
+      to: { x: 400, y: 131, angle: Math.PI, id: 'n2' },
+      points: [],
+    },
+  }, override);
+
+  assert.equal(runAudit('', make({})).pass, true, '基线应 pass');
+
+  // 判据 1: badAnchor
+  const badAnchorShape = make({});
+  badAnchorShape.lk.from = { x: 300, y: 300, angle: 0, id: 'n1' };
+  assert.equal(runAudit('', badAnchorShape).pass, false, 'badAnchor 应能独立否决');
+
+  // 判据 2: crossings
+  const crossShape = make({ blocker: { name: 'process', props: { x: 280, y: 110, w: 60, h: 40 } } });
+  assert.equal(runAudit('', crossShape).pass, false, 'crossings 应能独立否决');
+
+  // 判据 3: overlaps
+  const ovShape = make({});
+  ovShape.n2.props = { x: 200, y: 100, w: 132, h: 62 };
+  assert.equal(runAudit('', ovShape).pass, false, 'overlaps 应能独立否决');
+
+  // 判据 4: lkSkipped
+  const skipShape = make({ lkBad: { name: 'linker', linkerType: 'straight', points: [] } });
+  assert.equal(runAudit('', skipShape).pass, false, 'lkSkipped 应能独立否决');
+
+  // 判据 5: emptyScope
+  assert.equal(runAudit('zzz_none_', make({})).pass, false, 'emptyScope 应能独立否决');
+});
+
+
+// ---------------------------------------------------------------- auditDesignExpr 行为断言
+// 和 auditLayoutExpr 一样，它返回的也是"待执行表达式字符串"。
+// 之前 16 处提及 auditDesignExpr，全是 assert.match(源码, /MAX_TEXT/) 这种查字符串。
+// 变异 M6/X7/X8 证明：把 tooLong / tooWide / pass 全改成恒 0 / 恒 true
+// （即整个设计规范审计完全失效），144 项照样全绿。补上下面的：
+function runDesign(prefix, shape, scopeSub) {
+  const { fake } = makeSandbox(shape);
+  const expr = P.auditDesignExpr(prefix, scopeSub === undefined ? undefined : scopeSub);
+  return JSON.parse(vm.runInContext(expr, vm.createContext(fake), { filename: 'design.js' }));
+}
+
+// 【夹具要点】auditDesignExpr 读文案用的是 e.textBlock[0].text，
+// 不是 e.text。第一版夹具写成 e.text，导致 tooLong 恒 0 而误判成代码有问题。
+const tb = (s) => ({ textBlock: [{ text: s }] });
+
+ok('【行为·正向对照】合规设计必须 pass:true', () => {
+  const r = runDesign('', {
+    n1: Object.assign({ name: 'process', props: { x: 100, y: 100, w: 132, h: 62 } }, tb('发起申请')),
+    n2: Object.assign({ name: 'process', props: { x: 400, y: 100, w: 132, h: 62 } }, tb('审批通过')),
+  });
+  assert.equal(r.nodes, 2, '应数到 2 个流程节点，实际 ' + r.nodes);
+  assert.equal(r.tooLong, 0, '文案都短，不该报超长');
+  assert.equal(r.tooWide, 0, '宽度 132 < 200，不该报硬拉宽');
+  assert.equal(r.pass, true, '合规设计必须 pass:true，实际 ' + JSON.stringify(r));
+});
+
+ok('【行为】auditDesignExpr 必须报出超长文案', () => {
+  const r = runDesign('', {
+    n1: Object.assign({ name: 'process', props: { x: 100, y: 100, w: 132, h: 62 } },
+          tb('施工单位提交混凝土浇筑申请单并附送检报告'))   // 22 字 > 16
+  });
+  assert.ok(r.tooLong >= 1, '22 字超过 16 字上限，必须报出，实际 ' + r.tooLong);
+  assert.equal(r.pass, false, '有超长就不该 pass');
+});
+
+ok('【行为】auditDesignExpr 必须报出硬拉宽的节点', () => {
+  const r = runDesign('', {
+    n1: Object.assign({ name: 'process', props: { x: 100, y: 100, w: 260, h: 62 } }, tb('短文案')),
+  });
+  assert.ok(r.tooWide >= 1, '宽 260 > 200 上限，必须报出，实际 ' + r.tooWide);
+  assert.equal(r.pass, false, '硬拉宽就不该 pass');
+});
+
+ok('【行为】auditDesignExpr 排除装饰元素（泳道/标题/说明条）', () => {
+  const r = runDesign('', {
+    n1: Object.assign({ name: 'process', props: { x: 100, y: 100, w: 132, h: 62 } }, tb('正常节点')),
+    // 这些都不该算进流程节点
+    pool1: Object.assign({ name: 'horizontalPool', props: { x: 0, y: 0, w: 1800, h: 400 } }, tb('')),
+    lane1: Object.assign({ name: 'horizontalLane', props: { x: 0, y: 0, w: 1700, h: 140 } }, tb('施工单位')),
+    // 真实画布上标题的 id 以 tt_ 开头（实测 AE 现状图有 6 个），
+    // 说明条用 ov_、泳道标签用 lb_。这里按真实约定构造。
+    tt_title1: Object.assign({ name: 'process', props: { x: 100, y: 20, w: 900, h: 40 } },
+              tb('图1·这是一个很长很长的标题不应该被当成流程节点来检查文案长度')),
+    ov_note1: Object.assign({ name: 'process', props: { x: 100, y: 600, w: 800, h: 40 } },
+              tb('这段说明文字也不该被当成流程节点来检查')),
+  });
+  assert.equal(r.nodes, 1, '只该数到 1 个真实流程节点，实际 ' + r.nodes);
+  assert.ok(r.decorSkipped >= 4, '应该跳过 4 个装饰元素（pool/lane/tt_/ov_），实际 ' + r.decorSkipped);
+  assert.equal(r.pass, true, '装饰元素不该导致不通过');
+});
+
 // ---------------------------------------------------------------- 汇总
 console.log('');
 if (fails.length) {
