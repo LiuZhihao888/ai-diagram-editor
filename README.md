@@ -81,19 +81,18 @@ node test/selftest.mjs           # 24 项（此档不需要 Chromium 也能跑�
 > 优势是**不占用你的浏览器**、可以 headless 定时跑；代价是这 400 MB 磁盘 +
 > URL 里的 `encrypted_session` 票据会过期，过期后要重新从浏览器复制。
 
-## 分发包（zip）
+## 下载成品包
 
-> ⚠️ **本仓库尚未发布 Release，Releases 页面是空的。**
-> 需要 zip 请自己构建，一条命令（约 10 秒）：
+不用装任何东西就能先拿到包 —— 从 **[Releases](https://github.com/LiuZhihao888/ai-diagram-editor/releases/latest)** 下载：
 
-```bash
-cd wb && node tools/build-dist.mjs
-```
+| 文件 | 适合谁 | 你还需自备 |
+|---|---|---|
+| **`ai-diagram-editor-dsh-v1.1.0.zip`**（193 KB / 18 文件） | 已在用 DeepSeek Harness | DSH 本体 + 浏览器扩展 |
+| **`ai-diagram-editor-workbuddy-v1.1.0.zip`**（83 KB / 19 文件） | 不装扩展、想无人值守 | Node.js 20+ + Chromium（≈400 MB） |
 
-产出 `dist/DSH方案.zip`（191 KB / 18 文件）与 `dist/WorkBuddy方案.zip`（83 KB / 19 文件），
-包内自带 `安装指南.md`。两个包都**不含**浏览器扩展 —— 理由见上面第 1 档。
+解压后跟着包内的 `安装指南.md` 走。两个包都**不含**浏览器扩展 —— 理由见上面第 1 档。
 
-> `dist/` 不随仓库下载（构建产物，见 `.gitignore`）。构建细节见文末 [分发](#分发)。
+> 想自己打包？`cd wb && node tools/build-dist.mjs`，约 10 秒。`dist/` 是构建产物、不入库。
 
 ## 目录地图
 
