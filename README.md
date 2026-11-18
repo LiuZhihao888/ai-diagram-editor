@@ -21,18 +21,79 @@
 > **第一次看这个仓库？先读 [`docs/项目总结.md`](docs/项目总结.md)** —— 结论、证据、踩过的坑都在那。
 > **要决定用哪套？看 [`docs/两方案对比.md`](docs/两方案对比.md)** —— DSH 与 WorkBuddy 逐项对比与选型建议。
 
-## 只想用，不想读代码
+## 从这里开始：你要准备什么
 
-去 [Releases](../../releases) 下载对应方案的压缩包，解压后跟着包里的 `安装指南.md` 走：
+按你的目标选一档。**第一次接触建议先跑第 0 档** —— 零依赖，1 分钟就能确认仓库是真的。
 
-| 下载 | 适合谁 | 装什么 |
+### 第 0 档 · 只验证代码真伪（零依赖，只需 Node.js）
+
+```bash
+git clone https://github.com/LiuZhihao888/ai-diagram-editor.git
+cd ai-diagram-editor/dsh/skill/dsh-processon-diagram-editor
+node test/selftest.mjs      # 188 项全绿
+node test/mutation.mjs      # 20 项变异，证明测试真的会抓 bug
+node test/parity.mjs        # 两个产物行为一致
+```
+
+> 这一档**不碰任何网页、不需要任何账号**。实测在干净克隆里 4 个测试文件全部通过。
+
+### 第 1 档 · DSH 路线：让 AI 改你眼前的图
+
+| # | 要装什么 | 从哪来 | 不装会怎样 |
+|---|---|---|---|
+| 1 | **DeepSeek Harness** 本体 | DSH 官方 | 什么都干不了 |
+| 2 | **浏览器扩展** | DSH 插件市场搜 `@angelky7/dsh-browser-control` | **AI 完全碰不到 ProcessOn** |
+| 3 | **技能包** | 本仓库 `dsh/skill/dsh-processon-diagram-editor/` | AI 不知道怎么和 ProcessOn 打交道 |
+
+```powershell
+# 装技能：复制到 skills 目录（之后重启 DSH）
+Copy-Item -LiteralPath ".\dsh\skill\dsh-processon-diagram-editor" `
+  -Destination "$env:USERPROFILE\.dsh\skills\dsh-processon-diagram-editor" -Recurse -Force
+```
+
+> macOS / Linux 等价写法：
+> ```bash
+> cp -r dsh/skill/dsh-processon-diagram-editor ~/.dsh/skills/
+> ```
+
+> 💡 包内还有 `scripts/install.bat`，双击也行（Windows）。
+
+> 🔴 **扩展是硬门槛，且不由本仓库分发。** 它是第三方作品（作者 `@angelky7`），
+> 有独立仓库与许可证。我们**不打包、不镜像、不修改**它 —— 从插件市场装才能收到上游更新。
+> 扩展需要 `debugger` 权限（这正是它能读改页面的原因），请只从可信来源安装。
+
+### 第 2 档 · WorkBuddy 路线：不碰你的浏览器，可无人值守
+
+```bash
+cd ai-diagram-editor/wb
+npm install                      # playwright-core，约 14 MB
+npx playwright install chromium  # Chromium，约 400 MB
+node bin/pocli.mjs status        # 确认能启动
+node test/selftest.mjs           # 24 项（此档不需要 Chromium 也能跑）
+```
+
+| 依赖 | 体积 | 说明 |
 |---|---|---|
-| **WorkBuddy方案.zip** | 只想画图，不想折腾 | Node.js 20+ |
-| **DSH方案.zip** | 已经在用 DeepSeek Harness | DSH + 浏览器扩展（从插件市场装） |
+| Node.js | — | **20 或更高** |
+| `playwright-core` | ≈14 MB | `npm install` 自动装 |
+| Chromium | **393–436 MB** | `npx playwright install chromium`，实测两个版本 |
 
-> ⚠️ 请自行核对附件内容与安全后再安装，本项目不提供任何担保。
+> 优势是**不占用你的浏览器**、可以 headless 定时跑；代价是这 400 MB 磁盘 +
+> URL 里的 `encrypted_session` 票据会过期，过期后要重新从浏览器复制。
 
-> 两个包都**不含**浏览器扩展 —— 那个是第三方组件，请从 DSH 插件市场自行安装。
+## 分发包（zip）
+
+> ⚠️ **本仓库尚未发布 Release，Releases 页面是空的。**
+> 需要 zip 请自己构建，一条命令（约 10 秒）：
+
+```bash
+cd wb && node tools/build-dist.mjs
+```
+
+产出 `dist/DSH方案.zip`（191 KB / 18 文件）与 `dist/WorkBuddy方案.zip`（83 KB / 19 文件），
+包内自带 `安装指南.md`。两个包都**不含**浏览器扩展 —— 理由见上面第 1 档。
+
+> `dist/` 不随仓库下载（构建产物，见 `.gitignore`）。构建细节见文末 [分发](#分发)。
 
 ## 目录地图
 
@@ -133,7 +194,7 @@ node bridge/build.mjs --check   # 校验产物是否与源码一致（漂移则�
 
 ```bash
 cd dsh/skill/dsh-processon-diagram-editor
-node test/selftest.mjs    # 187 项离线断言（片段语法/转义/守卫/自包含/书签版本/泳道池/锚点绑定/间距重排/体检/侧栏卡/表达式工厂）
+node test/selftest.mjs    # 188 项离线断言（片段语法/转义/守卫/自包含/书签版本/泳道池/锚点绑定/间距重排/体检/侧栏卡/表达式工厂）
 node test/verify-pool.mjs # 33 项：泳道池行数能力离线验证
 node test/mutation.mjs    # 20 项变异测试：故意破坏实现，验证测试真的抓得到
 node test/parity.mjs      # 两个产物行为是否一致（压缩后仍等价）

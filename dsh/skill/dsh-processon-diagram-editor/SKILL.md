@@ -229,7 +229,7 @@ await POBridge.saveAndVerify(15000);
 - 多标签场景精确定位目标图、视口跳转不打扰用户
 
 > 页面侧 JS 片段全部集中在本技能目录的 `lib/page.mjs`。**不要现场手写 JS** —— 用那里的函数，参数走 `JSON.stringify`。
-> 离线自检：`node test/selftest.mjs`（187 项）+ `node test/parity.mjs` + `node test/verify-pool.mjs`（33 项）—— 都不需要浏览器、不碰画布，本技能自带。
+> 离线自检：`node test/selftest.mjs`（188 项）+ `node test/parity.mjs` + `node test/verify-pool.mjs`（33 项）—— 都不需要浏览器、不碰画布，本技能自带。
 
 ---
 
@@ -667,7 +667,7 @@ var g = POBridge.getPoolRows('ai_pool_<时间戳>');
 ```bash
 cd dsh/skill/dsh-processon-diagram-editor
 node test/verify-pool.mjs      # 33 项：片段语法/转义 + 假运行时源码↔产物 parity + 真实字段不变量 + 边界守卫
-node test/selftest.mjs         # 187 项：片段/转义/守卫/自包含/书签版本/池片段/侧栏卡/文字定宽/验收判定/表达式工厂
+node test/selftest.mjs         # 188 项：片段/转义/守卫/自包含/书签版本/池片段/侧栏卡/文字定宽/验收判定/表达式工厂
 node test/parity.mjs           # 源码与压缩产物行为一致（含泳道池断言）
 node ../../../bridge/build.mjs --check   # 产物未漂移（在 bridge/ 下运行亦可）
 ```
@@ -1372,7 +1372,7 @@ node tools/sync-skill.mjs          # 执行（自动备份 + 更新版本号 + �
 
 | 布局 | selftest | verify-pool |
 |---|---|---|
-| 仓库（`dsh/skill/...`） | **187 项全过** | **33 项全过** |
+| 仓库（`dsh/skill/...`） | **188 项全过** | **33 项全过** |
 | 独立安装（`~/.dsh/skills/...`） | **172 过 + 15 跳过** | 32 过 + 1 跳过 |
 
 跳过的那 15 项都是「源码里有没有某个常量/导出」这类断言 —— 独立安装时无从校验，跳过是对的。
@@ -2025,7 +2025,7 @@ node tools/sync-skill.mjs          # 默认目标 ~/.dsh/skills/dsh-processon-di
 node tools/sync-skill.mjs --dry    # 只看会改哪些文件，不落盘
 node tools/sync-skill.mjs --target <path>   # 自定义目标
 
-node test/selftest.mjs             # 187 项离线断言
+node test/selftest.mjs             # 188 项离线断言
 node test/verify-pool.mjs          # 33 项泳道池行数能力
 node test/parity.mjs               # 两个产物行为一致
 ```

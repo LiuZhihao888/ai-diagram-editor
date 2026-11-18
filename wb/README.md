@@ -119,7 +119,7 @@ node test/smoke.mjs      # 只读集成，约 3 秒
 
 ```bash
 cd ../dsh/skill/dsh-processon-diagram-editor
-node test/selftest.mjs    # 187 项
+node test/selftest.mjs    # 188 项
 node test/mutation.mjs    # 20 项变异测试
 node test/parity.mjs      # 校验 wb/pobridge.js 与 dsh 压缩版行为一致
 ```
