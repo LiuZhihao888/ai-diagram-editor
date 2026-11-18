@@ -98,7 +98,7 @@ await POBridge.saveAndVerify();   // 保存 + 确认真的落库
 | 渲染 | 显式置 `attribute.viewportRenderable = false` —— 缺这一步数据在、画布空 |
 | 保存 | 轮询保存图标回到空闲态，确认不在保存中、无错误 |
 
-**验收不是靠肉眼**：`auditLayoutExpr` 查数据层六项（正交/无零长段/无穿节点/锚点居中/角度正确/无重叠），
+**验收不是靠肉眼**：`auditLayoutExpr` 查数据层六项（`badAnchor` 锚点居中 / `crossings` 穿节点 / `tightGaps` 间距过近 / `minGap` 最小间距 / `overlaps` 节点重叠 / `lkSkipped` 跳过连线），
 `auditEdgeRender` 查渲染层（比对数据包围盒与 DOM 包围盒，抓「数据对但画面没跟上」）。
 
 细节见 [`dsh/skill/dsh-processon-diagram-editor/SKILL.md`](dsh/skill/dsh-processon-diagram-editor/SKILL.md)
@@ -106,7 +106,7 @@ await POBridge.saveAndVerify();   // 保存 + 确认真的落库
 
 ## 桥接层：一份源码，多个产物
 
-读写能力全在 `bridge/pobridge.js` 这一个文件里（85 KB / 2337 行 / 59 个导出）。
+读写能力全在 `bridge/pobridge.js` 这一个文件里（96.6 KB / 2337 行 / **44 个导出**，其中 39 个函数 + 5 个常量）。
 它利用 ProcessOn 页面的 `Model` / `MessageSource` / `Designer` 做增量写入与整图绘制，
 关键是用 `MessageSource.executeMessages(msg, true)`
 —— 直接调 `Model.addMulti()` 只改数据、画布不重绘。
@@ -133,7 +133,7 @@ node bridge/build.mjs --check   # 校验产物是否与源码一致（漂移则�
 
 ```bash
 cd dsh/skill/dsh-processon-diagram-editor
-node test/selftest.mjs    # 187 项离线断言（片段语法/转义/守卫/自包含/书签版本/泳道池/绘制引擎）
+node test/selftest.mjs    # 187 项离线断言（片段语法/转义/守卫/自包含/书签版本/泳道池/锚点绑定/间距重排/体检/侧栏卡/表达式工厂）
 node test/verify-pool.mjs # 33 项：泳道池行数能力离线验证
 node test/mutation.mjs    # 20 项变异测试：故意破坏实现，验证测试真的抓得到
 node test/parity.mjs      # 两个产物行为是否一致（压缩后仍等价）

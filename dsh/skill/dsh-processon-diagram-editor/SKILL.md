@@ -170,7 +170,12 @@ DOM 里连线的盒还在旧位置，截图看到箭头扎进节点内部，而�
 
 **⑥ 验收清单现在有 7 项**
 
-在原来 6 项（正交/无零长段/无穿节点/锚点居中/角度正确/无重叠）之外加：
+在 `auditLayoutExpr` 的 6 项之外加：
+
+> ⚠️ 那 6 项的实际字段是 `badAnchor` / `crossings` / `tightGaps` / `minGap` / `overlaps` / `lkSkipped`。
+> **不含「正交」「无零长段」「角度正确」** —— 这三种检测在当前实现里**不存在**，
+> 别以为跑了 `auditLayoutExpr` 就查过斜线了。斜线要自己算：
+> 逐段检查 `Math.abs(dx) < 0.5 || Math.abs(dy) < 0.5`，否则那段就是斜的。
 
 | 7 | `auditEdgeRender(prefix).pass === true` | 抓"数据对、画面错" |
 
@@ -1364,7 +1369,7 @@ node tools/sync-skill.mjs          # 执行（自动备份 + 更新版本号 + �
 | 布局 | selftest | verify-pool |
 |---|---|---|
 | 仓库（`dsh/skill/...`） | **187 项全过** | **33 项全过** |
-| 独立安装（`~/.dsh/skills/...`） | **148 过 + 15 跳过** | 32 过 + 1 跳过 |
+| 独立安装（`~/.dsh/skills/...`） | **172 过 + 15 跳过** | 32 过 + 1 跳过 |
 
 跳过的那 15 项都是「源码里有没有某个常量/导出」这类断言 —— 独立安装时无从校验，跳过是对的。
 **看到 skip 不是坏了，但也不等于通过。**
@@ -1883,15 +1888,26 @@ node test/mutation.mjs    # 测试本身还有没有用
 
 ### 🔴 零行为覆盖的导出（诚实清单）
 
-`POBridge` 有 **30** 个导出。第八轮核验实测：**selftest 真的调了 9 个**，其余只有字符串或漂移探针。
+`POBridge` 有 **44** 个导出（39 个函数 + 5 个常量）。
 
-| 状态 | 数量 | 函数 |
+> 🔴 **这个数字本轮被独立审计抓住改写**：文档原先写 **30**，实际执行
+> `vm` 沙箱跑完整源码后枚举 `Object.keys(POBridge)` 得到 **44**。
+> 被漏掉的 14 个**恰好是整条绘制引擎链** —— 也就是说「零覆盖诚实清单」
+> 自己把最重要的新能力漏在了账外。这与下面那条教训是同一个病第三次发作。
+
+| 状态 | 数量 | 导出 |
 |---|---|---|
-| ✅ selftest 真调（vm 沙箱执行） | **9** | `ANCHOR` `LAYOUT` `auditSideCard` `clampIntoView` `computeEdgeGeometry` `detectCrossings` `reflowSpacing` `rerouteEdge` `rerouteWorstEdges` |
+| ✅ selftest 真调（vm 沙箱执行） | **8** | `ANCHOR` `LAYOUT` `auditSideCard` `clampIntoView` `computeEdgeGeometry` `detectCrossings` `reflowSpacing` `rerouteEdge` |
 | ⚠️ 只有 `parity.mjs` 漂移探针 | 10 | `createNode` `readGraph` `updateNode` `createEdge` `removeNodes` `createPool` `setPoolRows` `getPoolRows` `focusRect` `getViewBox` |
-| ❌ 零行为覆盖 | 11 | `RED` `autoRouteAround` `createSideCard` `detectOverlaps` `listEdges` `polishLayout` `rebindEdge` `rebindEdges` `resetBrokenLinkers` `routeAround` `suggestChannel` |
+| ❌ 零行为覆盖 —— 改图侧 | 11 | `RED` `autoRouteAround` `createSideCard` `detectOverlaps` `listEdges` `polishLayout` `rebindEdge` `rebindEdges` `resetBrokenLinkers` `routeAround` `suggestChannel` |
+| ❌ **零行为覆盖 —— 绘制引擎侧** | **15** | `rerouteWorstEdges` `STYLE` `SHAPES` `buildNode` `buildPool` `buildRow` `drawEdge` `drawDiagram` `commit` `saveAndVerify` `auditEdgeRender` `setHumanize` `fitNodeWidth` `estimateTextWidth` `humanGap` |
 
-合计 **9 + 10 + 11 = 30**，账对得上。
+合计 **8 + 10 + 11 + 15 = 44**，逐项对过名字。
+
+> ⚠️ **绘制引擎侧 15 个是零离线覆盖的**。它只在真实画布上跑通过
+> （两轮干净上下文盲测 + 多次现场验证），离线测试碰不到它。
+> 这意味着**改 `bridge/pobridge.js` 的绘制部分不会有测试替你兜底** ——
+> 改完必须上真画布验，或补离线测试。
 
 > 🔴 **这张表被核验抓住过两次同类错误**：先是 `computeEdgeGeometry` 同时躺在 ✅ 和 ❌ 两栏，
 > 修完又轮到 `auditSideCard`；而且合计数 `8+10+12=30` 与 `9+10+11=30` **碰巧都是 30**，

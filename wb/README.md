@@ -3,12 +3,12 @@
 不装扩展、不开浏览器、不依赖任何外部桥接服务：自己起一个 Chromium，凭文档 URL 里的
 `encrypted_session` 直接进编辑态，注入桥接层后做增量改图**或从零画整张图**，默认 Ctrl+S 保存。
 
-> 桥接层与 DSH 方案是**同一份源码**（`bridge/pobridge.js`，85 KB / 59 个导出），
+> 桥接层与 DSH 方案是**同一份源码**（`bridge/pobridge.js`，96.6 KB / 44 个导出），
 > 所以两边的改图、画图、验收能力完全一致，差别只在「AI 怎么碰到页面」。
 
 ```
 wb/
-├── bin/pocli.mjs        CLI 入口（13 个子命令）
+├── bin/pocli.mjs        CLI 入口（12 个子命令）
 ├── lib/pw.mjs           Playwright 传输层（启动/就绪/注入/截图/保存/服务端校验）
 ├── lib/page.mjs         页面侧 JS 片段（传输无关，原生工具后端可原样复用）
 ├── lib/args.mjs         参数解析（无依赖，可测）
@@ -42,7 +42,7 @@ node bin/pocli.mjs read --json g.json    # 读结构（节点/连线/泳道/池�
 | `verify --expect-nodes N` | 开干净上下文读服务端副本，确认真的落库 |
 | `snippet read\|count\|pool\|viewbox\|fit\|inject\|add` | 输出可直接粘给会话内 `browser_evaluate` 的 JS |
 
-全部命令输出 JSON；失败退出码：`2` 用法错、`3` 读图/渲染失败、`4` 校验不一致、`5` 登录墙、`6` 页面异常。
+全部命令输出 JSON；失败退出码：`2` 用法错、`3` 读图/渲染失败、`4` 校验不一致、`5` 登录墙、`6` 页面异常、`7` 环境缺 Chromium。
 
 ## 实测数据（Windows 11 / Edge 同机 / 2026-11-04）
 
