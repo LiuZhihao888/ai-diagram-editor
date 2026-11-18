@@ -95,6 +95,45 @@ POBridge.STYLE  // 已内置上面全部默认值
 > 还有 3 处节点重叠（−98~−139px）。那是手拖噪声，不是风格。复刻要抄的是
 > **语义不混用 + 单一墨色 + 50px 净空 + 垂直居中 + 列对齐**。
 
+#### 画得像人：拟人化参数（humanize）
+
+机械等距看起来"标准"但不像人画的。人画的图有轻微不均匀、按文字量定宽、按语义分层。
+这些都做成了**可复现的参数**（同 seed 得同一张图，不是随机漂移）。
+
+```js
+POBridge.setHumanize({ enabled: true, seed: 20261118, gapJitter: 0.18 });
+POBridge.setHumanize({ enabled: false });          // 回到严格等距
+POBridge.setHumanize({ seed: 12345 });            // 换一种"随意"
+POBridge.setHumanize({ gapJitter: 0.30 });        // 更随意
+POBridge.setHumanize({ widthMax: 200 });          // 允许更宽节点
+POBridge.setHumanize();                           // 不传参 = 读当前值
+```
+
+**默认参数**（`STYLE.humanize`）：
+
+| 参数 | 默认 | 作用 |
+|---|---|---|
+| `gapJitter` | 0.18 | 间距抖动 ±18%，实测产出 `57,54,45,60,50,47,56,53` 八个不同值 |
+| `widthPerChar` | 13.2 | 每字宽度（微软雅黑 13px 实测） |
+| `widthPad` | 34 | 定宽左右留白 |
+| `widthMin` / `widthMax` | 84 / 168 | 宽度上下限（超长文字换行而非无限加宽） |
+| `semanticScale` | 见下 | 语义尺寸层级 |
+
+```js
+semanticScale: { start: 0.92, end: 0.92, terminator: 0.92,  // 端点略小
+                 decision: 1.06,                            // 判断略大（菱形要空间）
+                 process: 1.0, rectangle: 0.94 }
+```
+
+**为什么这样才像人**：
+- 人会按文字多少给框子不同宽度（实测「初审」100 → 「金额是否超过一百万元」164）
+- 人不会精确等距，但也不会乱来（±18% 恰好是"手拖"的误差范围）
+- 人让判断节点大一点，因为它要放分叉文字
+
+> ⚠️ 但**不要**学手绘真正的缺点：`docs/handdrawn-style-spec.md` 记录那张图
+> 的 `process` 有 6 种宽度、14 种高度取值，还有 3 处节点重叠 —— 那是手滑噪声，
+> 不是风格。拟人化要的是"看起来自然"，不是"复现错误"。
+
 #### 从零画图的 6 个实战陷阱（盲测实测，全部踩过）
 
 **① `drawDiagram` 自己建池，不要再预先 `createPool`**

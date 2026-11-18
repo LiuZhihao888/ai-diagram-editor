@@ -39,6 +39,49 @@ for (const name of FRAGMENTS) {
   ok('片段可编译: ' + name, () => syntaxOk(P[name]));
 }
 
+// 【回归】lib/page.mjs 里所有 **参数化表达式工厂**（*Expr 函数）生成出来的代码
+// 也必须语法合法。历史 bug：focusRectExpr 的 IIFE 收尾写成 ')(' 少了 '}'，
+// 生成 '(function(){...})(' 这种残缺代码，调用直接 SyntaxError。
+// 因为上面的 FRAGMENTS 是手工枚举的固定列表，这个新函数没被覆盖，
+// 163 项自检全绿却漏掉了它 —— 干净上下文子代理实测踩到才发现。
+// 所以这里改成**自动遍历所有导出函数**，不再依赖人工往列表里加名字。
+{
+  const exprFns = Object.keys(P).filter(
+    (k) => typeof P[k] === 'function' && /Expr$/.test(k)
+  );
+  ok('lib/page.mjs 至少有一个 *Expr 工厂', () => {
+    assert.ok(exprFns.length >= 1, '应至少有 1 个 *Expr 函数，实际 ' + exprFns.length);
+  });
+
+  // 每个工厂给一组"通用哑参数"：按函数声明的形参个数传，
+  // 保证不会因为少传参而走到另一条分支。值本身只要是合法 JSON 即可。
+  const dummyFor = (fn) => {
+    const n = fn.length || 1;
+    return Array.from({ length: n }, (_, i) => i === 0 ? 'probe_id' : 100);
+  };
+
+  for (const name of exprFns) {
+    ok('参数化表达式可编译: ' + name, () => {
+      const fn = P[name];
+      const args = dummyFor(fn);
+      let out;
+      try {
+        out = fn(...args);
+      } catch (e) {
+        // 工厂自身对参数有更强要求（比如需要对象），这类单独跳过不判失败。
+        return;
+      }
+      if (typeof out !== 'string') return;
+      // 关键断言：生成的字符串必须能编译。
+      try {
+        new Function('return ' + out);
+      } catch (e) {
+        assert.fail(name + ' 生成的代码语法非法: ' + e.message + '\n--- 生成内容 ---\n' + out);
+      }
+    });
+  }
+}
+
 // ---------------------------------------------------------------- [2] 注入无害
 ok('injectExpr 可编译', () => syntaxOk(P.injectExpr('window.X=1;')));
 ok('injectExpr 会报出 POBridge 类型', () => {

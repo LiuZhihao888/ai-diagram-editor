@@ -353,7 +353,7 @@ export function focusRectExpr(x, y, w, h) {
     '  } catch (e) {',
     "    return JSON.stringify({error: String(e && e.message || e)});",
     '  }',
-    ')(' + [x, y, w, h].map(v => JSON.stringify(v)).join(', ') + ')',
+    '})(' + [x, y, w, h].map(v => JSON.stringify(v)).join(', ') + ')',
   ].join('\n');
 }
 

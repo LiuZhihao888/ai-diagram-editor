@@ -1678,8 +1678,77 @@
     gapY: 118,
     laneH: 200,
     lanePadTop: 65,
-    poolHeaderW: 84
+    poolHeaderW: 84,
+
+    // ---- 拟人化参数（humanize）----
+    // 人类手绘不是等距网格：会有轻微的不均匀、按文字量定宽、按语义分层尺寸。
+    // 这里全部是**确定性**的（同一个 seed 得到同一张图），不用 Math.random。
+    humanize: {
+      enabled: true,
+      seed: 20261118,        // 换 seed 得到不同但同样合理的抖动
+      gapJitter: 0.18,       // 间距抖动幅度 ±18%（人不会精确等距）
+      widthPerChar: 13.2,    // 每字宽度（微软雅黑 13px 实测）
+      widthPad: 34,          // 定宽的左右留白
+      widthMin: 84,
+      widthMax: 168,         // 超长文字换行而不是无限加宽
+      // 语义尺寸层级：让人一眼看出主次
+      semanticScale: {
+        start: 0.92, end: 0.92, terminator: 0.92,   // 端点略小
+        decision: 1.06,                              // 判断略大（菱形需要空间）
+        process: 1.0, rectangle: 0.94,
+        storedData: 1.0, predefined: 1.0
+      }
+    }
   };
+
+  // 确定性伪随机（线性同余）。同一个 seed + 同一个 key 永远得到同一个值。
+  // 用它做"看起来随意但其实可复现"的抖动。
+  function seededUnit(seed, key) {
+    var h = (seed >>> 0) ^ 0x9e3779b9;
+    var str = String(key);
+    for (var i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+    }
+    // 映射到 [-1, 1]
+    return ((h % 20001) / 10000) - 1;
+  }
+
+  // 按文字估算需要的宽度（近似 canvas measureText，够用且不依赖 DOM）
+  function estimateTextWidth(text, fontSize) {
+    var t = String(text == null ? '' : text);
+    if (!t) return 0;
+    var fs2 = fontSize || STYLE.fontSize;
+    var w = 0;
+    for (var i = 0; i < t.length; i++) {
+      var c = t.charCodeAt(i);
+      // CJK 全角 ≈ 1 字宽；ASCII ≈ 0.55 字宽
+      w += (c > 0x2e80 && c < 0x9fff) ? fs2 : fs2 * 0.55;
+    }
+    return w;
+  }
+
+  // 按文字量算出节点宽度（只放大不缩到低于 widthMin）
+  function fitNodeWidth(text, shapeName, explicit) {
+    if (typeof explicit === 'number' && isFinite(explicit)) return Math.round(explicit);
+    var H = STYLE.humanize;
+    var base = (SHAPES[shapeName] || SHAPES.process).w;
+    if (!H.enabled) return base;
+    var need = estimateTextWidth(text, STYLE.fontSize) + H.widthPad;
+    var w = Math.max(base, Math.min(H.widthMax, need));
+    // 语义缩放
+    var scale = H.semanticScale[shapeName];
+    if (typeof scale === 'number') w = w * scale;
+    return Math.round(Math.max(H.widthMin * 0.85, w));
+  }
+
+  // 拟人间距：在基准上做确定性抖动
+  function humanGap(baseGap, key) {
+    var H = STYLE.humanize;
+    if (!H.enabled) return baseGap;
+    var u = seededUnit(H.seed, key);
+    return Math.round(baseGap * (1 + u * H.gapJitter));
+  }
 
   // 形状规格表：语义 -> 尺寸与形状名
   // 形状规格：语义 -> { Model.create 用的官方形状名, 默认尺寸 }
@@ -1782,7 +1851,7 @@
     c.props = {
       zindex: o.zindex == null ? 900 : o.zindex,
       x: Math.round(o.x), y: Math.round(o.y),
-      w: Math.round(o.w == null ? spec.w : o.w),
+      w: Math.round(o.w == null ? fitNodeWidth(o.text, o.shape || 'process') : o.w),
       h: Math.round(o.h == null ? spec.h : o.h),
       angle: 0
     };
@@ -1835,7 +1904,19 @@
   function buildPool(opts) {
     var o = opts || {};
     var lanes = o.lanes || [];
-    var headerW = o.headerWidth || STYLE.poolHeaderW;
+    // 表头宽度：显式给优先；否则按最长泳道标题的字数自适应。
+    // 原因：原生 horizontalPool 的表头是竖向文字区，太窄会把标题压成
+    // 两行糊在一起（实测 56px 装不下 6 个字）。
+    var autoHeader = 0;
+    (lanes || []).forEach(function (ln) {
+      var t = String((ln && ln.title) || '');
+      // 竖向文字：宽度需求 ≈ 单字宽 × 1.6（留呼吸），行数由高度决定
+      var need = Math.round(STYLE.fontSize * 1.6 + (t.length > 5 ? STYLE.fontSize * 0.6 : 0));
+      if (need > autoHeader) autoHeader = need;
+    });
+    var headerW = (typeof o.headerWidth === 'number' && o.headerWidth > 0)
+      ? o.headerWidth
+      : Math.max(STYLE.poolHeaderW, autoHeader);
     var laneH = (typeof o.laneH === 'number' && isFinite(o.laneH) && o.laneH > 0)
       ? o.laneH : STYLE.laneH;
     var width = o.width || 1200;
@@ -1895,8 +1976,9 @@
 
     items.forEach(function (it, i) {
       var spec = SHAPES[it.shape] || SHAPES.process;
-      var w = it.w == null ? spec.w : it.w;
-      var h = it.h == null ? spec.h : it.h;
+      // 拟人化：宽度按文字量算（显式 w 优先）
+      var w = fitNodeWidth(it.text, it.shape || 'process', it.w);
+      var h = it.h == null ? Math.round(spec.h * (STYLE.humanize.semanticScale[it.shape] || 1)) : it.h;
       // 垂直居中于泳道
       var y = o.laneY + Math.round((laneH - h) / 2);
       var nd = buildNode({
@@ -1907,7 +1989,11 @@
       });
       out.push(nd);
       ids.push(nd.id);
-      x += w + (it.gapAfter == null ? gapX : it.gapAfter);
+      // 拟人化：间距做确定性抖动
+      var thisGap = it.gapAfter == null
+        ? humanGap(gapX, (o.idPrefix || 'row') + '_' + i)
+        : it.gapAfter;
+      x += w + thisGap;
     });
 
     commit(out);
@@ -2075,6 +2161,24 @@
       nodes: allIds.length, edges: edgeResults.length, edgeResults: edgeResults };
   }
 
+  // 控制「像人」的程度。
+  //   setHumanize({enabled:false})              -> 回到机械等距（适合需要严格网格的场合）
+  //   setHumanize({gapJitter:0.3})              -> 更随意的间距
+  //   setHumanize({seed:12345})                 -> 换一种"随意"（可复现）
+  //   setHumanize({widthMax:200})               -> 允许更宽的节点
+  function setHumanize(patch) {
+    var H = STYLE.humanize;
+    if (!patch || typeof patch !== 'object') return JSON.parse(JSON.stringify(H));
+    Object.keys(patch).forEach(function (k) {
+      if (k === 'semanticScale' && patch[k] && typeof patch[k] === 'object') {
+        Object.keys(patch[k]).forEach(function (sk) { H.semanticScale[sk] = patch[k][sk]; });
+      } else if (k in H) {
+        H[k] = patch[k];
+      }
+    });
+    return JSON.parse(JSON.stringify(H));
+  }
+
   // 验收：连线「数据 vs 渲染」一致性
   // 解决一类隐蔽缺陷：数据全对（badAnchor=0）但 DOM 里的连线盒停在旧位置，
   // 截图看到箭头扎进节点内部。纯数据审计查不出这个。
@@ -2220,7 +2324,12 @@
     drawDiagram: drawDiagram,
     commit: commit,
     saveAndVerify: saveAndVerify,
-    auditEdgeRender: auditEdgeRender
+    auditEdgeRender: auditEdgeRender,
+    // 拟人化
+    setHumanize: setHumanize,
+    fitNodeWidth: fitNodeWidth,
+    estimateTextWidth: estimateTextWidth,
+    humanGap: humanGap
   };
 
   return global.POBridge;
