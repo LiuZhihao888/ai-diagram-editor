@@ -1465,6 +1465,78 @@ ok('【行为】rerouteWorstEdges 有正向对照：该绕的边必须真的被 
     JSON.stringify({ applied: r.applied, skipped: r.skipped, scanned: r.scanned }));
 });
 
+// ------------------------------------------------------- [N] 诚实清单自洽
+// 【为什么要有这一条】
+// SKILL.md 里那张「零行为覆盖的导出」表是**手写**的，在这个项目上已经错了三次：
+//   第一次：computeEdgeGeometry 同时躺在 ✅ 和 ❌ 两栏
+//   第二次：auditSideCard 同类错误
+//   第三次：整张表只列 30 个导出，而实际 44 个 —— 漏掉的 14 个恰好是
+//           全部绘制引擎（drawDiagram / buildNode / saveAndVerify …），
+//           也就是说「零覆盖诚实清单」自己把最重要的新能力漏在了账外。
+// 三次都是「合计碰巧还是同一个数」+「只有逐项比名字才能发现」。
+//
+// 人改一遍还会再错。所以在这里用**机器**锁死：
+//   真实导出集合（执行源码后 Object.keys 取得）必须与 SKILL.md 表里列出的名字集合完全相同。
+// 清单一旦漏项、多写、或改了导出却没更新文档，这条就红。
+
+ok('SKILL.md 的导出清单与实际导出完全一致', () => {
+  const skillPath = path.join(HERE, '..', 'SKILL.md');
+  if (!fs.existsSync(skillPath)) throw new Error('SKIP_NO_BRIDGE_SRC');
+  const bridgePath = path.join(HERE, '..', '..', '..', '..', 'bridge', 'pobridge.js');
+  if (!fs.existsSync(bridgePath)) throw new Error('SKIP_NO_BRIDGE_SRC');
+
+  // 1) 真的执行桥接层源码，拿到真实导出集合
+  const src = fs.readFileSync(bridgePath, 'utf8');
+  const sandbox = {
+    global: {}, window: {}, console,
+    Math, JSON, String, Number, Boolean, Array, Object, Date, RegExp, Error,
+    isFinite, isNaN, parseInt, parseFloat,
+  };
+  sandbox.global = sandbox;
+  sandbox.window = sandbox;
+  vm.createContext(sandbox);
+  vm.runInContext(src, sandbox, { timeout: 10000 });
+  const PB = sandbox.global.POBridge || sandbox.POBridge;
+  assert.ok(PB, '执行桥接层后应得到 POBridge');
+  const real = Object.keys(PB).sort();
+
+  // 2) 从 SKILL.md 的诚实清单表里提取列出的名字
+  const md = fs.readFileSync(skillPath, 'utf8');
+  const startIdx = md.indexOf('零行为覆盖的导出');
+  assert.ok(startIdx >= 0, 'SKILL.md 里应有「零行为覆盖的导出」小节');
+  // 截到「合计」那一行为止
+  const endIdx = md.indexOf('合计', startIdx);
+  assert.ok(endIdx > startIdx, '诚实清单应有「合计」收尾行');
+  const section = md.slice(startIdx, endIdx);
+
+  // 只从**表格行**里提取（行首是 |），避免把正文说明里的 POBridge / vm 之类当成清单项
+  const listed = new Set();
+  for (const line of section.split('\n')) {
+    if (!/^\s*\|/.test(line)) continue;
+    // 跳过表头分隔行（| --- | --- |）
+    if (/^\s*\|\s*-{2,}/.test(line)) continue;
+    for (const m of line.matchAll(/`([A-Za-z_][A-Za-z0-9_]*)`/g)) listed.add(m[1]);
+  }
+
+  // 3) 双向比对
+  const missing = real.filter((x) => !listed.has(x));
+  const extra = [...listed].filter((x) => !real.includes(x)).sort();
+
+  assert.deepEqual(missing, [],
+    '诚实清单漏掉了这些真实导出（应补进表里）: ' + missing.join(', '));
+  assert.deepEqual(extra, [],
+    '诚实清单列了这些并不存在的导出（应删掉）: ' + extra.join(', '));
+
+  // 4) 表格里各栏的数量之和必须等于真实导出数
+  //    数字可能写成 **8**（加粗），所以允许 ** 包裹
+  const sums = [...section.matchAll(/\|\s*\*{0,2}(\d+)\*{0,2}\s*\|/g)].map((m) => Number(m[1]));
+  assert.ok(sums.length >= 2, '诚实清单应至少有两栏带数字，实际 ' + sums.length);
+  const total = sums.reduce((a, b) => a + b, 0);
+  assert.equal(total, real.length,
+    '诚实清单各栏数字之和 ' + total + ' 应等于真实导出数 ' + real.length +
+    '（当前各栏: ' + sums.join(' + ') + '）');
+});
+
 // ---------------------------------------------------------------- 汇总
 console.log('');
 if (fails.length) {

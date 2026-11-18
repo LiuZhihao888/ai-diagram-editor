@@ -212,9 +212,13 @@ await POBridge.saveAndVerify(15000);
 // -> { ok: true, href: '#icon-cloud_sync', version: 2290, elapsedMs: 1200 }
 ```
 
-判定"已落库"的三条件（实测）：`#save-tip` 图标回到 `#icon-cloud_sync`
-&& `sendMessage.saving === false` && `localStorage['version_local_<fileId>']` 与
-`sendMessage.version` 一致。优先调 `UI.save()`，它内部走 `sendMessage.saveOnline('click')`。
+判定"已落库"的三条件（**这才是代码里真实的判据**）：`#save-tip` 图标回到 `#icon-cloud_sync`
+&& `sendMessage.saving === false` && `errorSave === 0`。
+优先调 `UI.save()`，它内部走 `sendMessage.saveOnline('click')`。
+
+> 🔴 **不要**把 `localStorage['version_local_<fileId>'] === sendMessage.version` 当判据 ——
+> 那两个是不同步的计数器（实测 2380 vs 2378，方向不固定），相等永远不成立，必然超时。
+> `saveAndVerify` 只是把 `localVersion` 回传出来供参考，**不参与判定**（见上面陷阱⑦）。
 
 ### 已实测能力
 
@@ -1897,12 +1901,12 @@ node test/mutation.mjs    # 测试本身还有没有用
 
 | 状态 | 数量 | 导出 |
 |---|---|---|
-| ✅ selftest 真调（vm 沙箱执行） | **8** | `ANCHOR` `LAYOUT` `auditSideCard` `clampIntoView` `computeEdgeGeometry` `detectCrossings` `reflowSpacing` `rerouteEdge` |
-| ⚠️ 只有 `parity.mjs` 漂移探针 | 10 | `createNode` `readGraph` `updateNode` `createEdge` `removeNodes` `createPool` `setPoolRows` `getPoolRows` `focusRect` `getViewBox` |
+| ✅ selftest 真调（vm 沙箱执行） | **8** | `ANCHOR` `auditSideCard` `clampIntoView` `computeEdgeGeometry` `detectCrossings` `reflowSpacing` `rerouteEdge` `rerouteWorstEdges` |
+| ⚠️ 只有 `parity.mjs` 漂移探针 / 字符串断言 | 11 | `LAYOUT` `createNode` `readGraph` `updateNode` `createEdge` `removeNodes` `createPool` `setPoolRows` `getPoolRows` `focusRect` `getViewBox` |
 | ❌ 零行为覆盖 —— 改图侧 | 11 | `RED` `autoRouteAround` `createSideCard` `detectOverlaps` `listEdges` `polishLayout` `rebindEdge` `rebindEdges` `resetBrokenLinkers` `routeAround` `suggestChannel` |
-| ❌ **零行为覆盖 —— 绘制引擎侧** | **15** | `rerouteWorstEdges` `STYLE` `SHAPES` `buildNode` `buildPool` `buildRow` `drawEdge` `drawDiagram` `commit` `saveAndVerify` `auditEdgeRender` `setHumanize` `fitNodeWidth` `estimateTextWidth` `humanGap` |
+| ❌ **零行为覆盖 —— 绘制引擎侧** | **14** | `STYLE` `SHAPES` `buildNode` `buildPool` `buildRow` `drawEdge` `drawDiagram` `commit` `saveAndVerify` `auditEdgeRender` `setHumanize` `fitNodeWidth` `estimateTextWidth` `humanGap` |
 
-合计 **8 + 10 + 11 + 15 = 44**，逐项对过名字。
+合计 **8 + 11 + 11 + 14 = 44**，逐项对过名字。
 
 > ⚠️ **绘制引擎侧 15 个是零离线覆盖的**。它只在真实画布上跑通过
 > （两轮干净上下文盲测 + 多次现场验证），离线测试碰不到它。
