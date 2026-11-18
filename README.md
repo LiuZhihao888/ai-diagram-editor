@@ -1,4 +1,4 @@
-# ai-diagram-editor · 画布增量改图可行性研究
+# ai-diagram-editor · ProcessOn 画布 AI 读写引擎
 
 > ⚠️ **免责声明（使用前请务必阅读）**
 >
@@ -9,10 +9,14 @@
 >
 > 完整版声明见 [`DISCLAIMER.md`](DISCLAIMER.md)。
 
-在 ProcessOn 现有画布上做 **AI 增量改图**的完整研究与实现。
+在 ProcessOn 画布上做 **AI 读写**的完整研究与实现 —— 既能改，也能画。
 
-改的是你已经画好的那张图 —— 加一步、改文案、连箭头、删节点。改动红色高亮，
+**改图**：在你已经画好的图上加一步、改文案、连箭头、删节点。改动红色高亮，
 同事通过 ProcessOn 的协同通道实时看到。
+
+**画图**：从空白处一笔一笔画出整张泳道图。不是套模板，而是自己建池、摆节点、
+连正交线 —— 支持圆头端点、真菱形判断、自动避让，画完还能拟人化（按文字量定宽、
+间距轻微不均），最后自动保存并校验真的落库。
 
 > **第一次看这个仓库？先读 [`docs/项目总结.md`](docs/项目总结.md)** —— 结论、证据、踩过的坑都在那。
 > **要决定用哪套？看 [`docs/两方案对比.md`](docs/两方案对比.md)** —— DSH 与 WorkBuddy 逐项对比与选型建议。
@@ -57,11 +61,59 @@
 
 两套改的是**同一份文档、同一份数据**，共用同一份桥接层，互不影响。按你用的 AI 工具选一套。
 
+## 从零画一张图长什么样
+
+AI 拿到的不是「一张图片」，而是一条条可验证的原语调用：
+
+```js
+POBridge.drawDiagram({
+  origin: { x: 2000, y: 1010 },
+  width: 1320,
+  lanes: [
+    { title: '业务部门', items: [{ id:'n1', shape:'start',   text:'起草合同' },
+                                { id:'n2', shape:'process', text:'部门审核' }] },
+    { title: '法务',     items: [{ id:'n3', shape:'process', text:'法务审查' },
+                                { id:'n4', shape:'decision',text:'金额是否超100万' }] },
+    { title: '总经理',   items: [{ id:'n5', shape:'process', text:'总经理审批' },
+                                { id:'n6', shape:'end',     text:'签署用印' }] }
+  ],
+  edges: [
+    ['n1','n2'], ['n2','n3'], ['n3','n4'],
+    ['n4','n5','是','B','T'],      // 第 4/5 位 = 指定出入口边
+    ['n4','n6','否','R','T'],
+    ['n5','n6']
+  ]
+});
+await POBridge.saveAndVerify();   // 保存 + 确认真的落库
+```
+
+它会自己完成这些事：
+
+| 步骤 | 做什么 |
+|---|---|
+| 建池 | `horizontalPool` + N 条 `horizontalLane`，表头宽度按最长泳道名自适应 |
+| 取骨架 | 用官方 `Model.create(name)` 拿形状定义 —— `start` 才有圆头、`decision` 才是真菱形 |
+| 排版 | 节点在泳道内垂直居中，宽度按文字量算，间距做确定性抖动（拟人化） |
+| 连线 | 自动选边 + 正交路由，跨泳道时可用第 4/5 位参数锁定出入口 |
+| 渲染 | 显式置 `attribute.viewportRenderable = false` —— 缺这一步数据在、画布空 |
+| 保存 | 轮询保存图标回到空闲态，确认不在保存中、无错误 |
+
+**验收不是靠肉眼**：`auditLayoutExpr` 查数据层六项（正交/无零长段/无穿节点/锚点居中/角度正确/无重叠），
+`auditEdgeRender` 查渲染层（比对数据包围盒与 DOM 包围盒，抓「数据对但画面没跟上」）。
+
+细节见 [`dsh/skill/dsh-processon-diagram-editor/SKILL.md`](dsh/skill/dsh-processon-diagram-editor/SKILL.md)
+的「🆕 从零画图」与「画得像人：拟人化参数」两节。
+
 ## 桥接层：一份源码，多个产物
 
-改图能力全在 `bridge/pobridge.js` 这 8KB 里。它利用 ProcessOn 页面的 `Model` /
-`MessageSource` / `Designer` 做增量写入，关键是用 `MessageSource.executeMessages(msg, true)`
+读写能力全在 `bridge/pobridge.js` 这一个文件里（85 KB / 2337 行 / 59 个导出）。
+它利用 ProcessOn 页面的 `Model` / `MessageSource` / `Designer` 做增量写入与整图绘制，
+关键是用 `MessageSource.executeMessages(msg, true)`
 —— 直接调 `Model.addMulti()` 只改数据、画布不重绘。
+
+**改图原语**：`readGraph` `createNode` `updateNode` `removeNodes` `createEdge` `rebindEdge` …
+**画图原语**：`drawDiagram` `buildNode` `buildPool` `buildRow` `drawEdge` `commit` `saveAndVerify`
+**验收原语**：`auditLayoutExpr`（数据层六项）`auditEdgeRender`（渲染层，抓「数据对画面错」）
 
 ```bash
 node bridge/build.mjs           # 构建全部产物
@@ -81,13 +133,14 @@ node bridge/build.mjs --check   # 校验产物是否与源码一致（漂移则�
 
 ```bash
 cd dsh/skill/dsh-processon-diagram-editor
-node test/selftest.mjs   # 46 项离线断言（页面片段/转义/守卫/自包含/书签版本/泳道池）
+node test/selftest.mjs    # 187 项离线断言（片段语法/转义/守卫/自包含/书签版本/泳道池/绘制引擎）
 node test/verify-pool.mjs # 33 项：泳道池行数能力离线验证
-node test/parity.mjs     # 两个产物行为是否一致（压缩后仍等价）
+node test/mutation.mjs    # 20 项变异测试：故意破坏实现，验证测试真的抓得到
+node test/parity.mjs      # 两个产物行为是否一致（压缩后仍等价）
 
 cd wb
-node test/selftest.mjs   # 24 项离线断言
-node test/smoke.mjs      # 只读集成：真开一次页面读图（需先 set-url）
+node test/selftest.mjs    # 24 项离线断言
+node test/smoke.mjs       # 只读集成：真开一次页面读图（需先 set-url）
 ```
 
 全部离线可跑，不需要浏览器、不碰任何文档。

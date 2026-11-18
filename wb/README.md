@@ -1,7 +1,10 @@
 # pocli —— ProcessOn 画布增量改图（Playwright 后端）
 
 不装扩展、不开浏览器、不依赖任何外部桥接服务：自己起一个 Chromium，凭文档 URL 里的
-`encrypted_session` 直接进编辑态，注入 4KB 桥接层后做增量改图，默认 Ctrl+S 保存。
+`encrypted_session` 直接进编辑态，注入桥接层后做增量改图**或从零画整张图**，默认 Ctrl+S 保存。
+
+> 桥接层与 DSH 方案是**同一份源码**（`bridge/pobridge.js`，85 KB / 59 个导出），
+> 所以两边的改图、画图、验收能力完全一致，差别只在「AI 怎么碰到页面」。
 
 ```
 wb/
@@ -54,12 +57,48 @@ node bin/pocli.mjs read --json g.json    # 读结构（节点/连线/泳道/池�
 
 无登录墙、无扩展依赖。身份来自 URL 里的 `encrypted_session`；本地 profile 只复用浏览器缓存（提速），不放登录态。同一份文档在别处打开着也不冲突（实测 6 次并发进入无弹窗）。
 
+## 从零画整张图
+
+CLI 的 `add` / `edge` 是逐图元操作，适合改图。
+要画整张泳道图，直接在页面里调桥接层的绘制原语：
+
+```js
+POBridge.drawDiagram({
+  origin: { x: 2000, y: 1010 }, width: 1320,
+  lanes: [
+    { title: '业务部门', items: [{ id:'n1', shape:'start', text:'起草合同' }] },
+    { title: '法务',     items: [{ id:'n2', shape:'process', text:'法务审查' }] }
+  ],
+  edges: [['n1','n2']]
+});
+await POBridge.saveAndVerify();
+```
+
+底层原语（需要精确控制几何时用）：
+
+| 原语 | 作用 |
+|---|---|
+| `buildPool` | 建池 + N 条泳道，表头宽度按最长标题自适应 |
+| `buildNode` | 建节点，用官方 `Model.create` 取骨架（形状语义靠它） |
+| `buildRow` | 一行内顺序摆节点，泳道内垂直居中 |
+| `drawEdge` | 连线，自动定边 + 正交路由 + 标签定位 |
+| `commit` | 批量落库（走 `MessageSource`，带 undo 栈） |
+| `saveAndVerify` | 保存并确认真的落库 |
+| `setHumanize` | 拟人化开关（间距抖动 / 按文字量定宽 / 语义尺寸层级） |
+
+> 完整的参数说明、验收清单与实战陷阱见 DSH 技能的 `SKILL.md`，
+> 因为它和这边是同一份桥接层。
+
 ## 三个必须知道的机制
 
 1. **必须走 `MessageSource.executeMessages(msg, true)`**。直接 `Model.addMulti()` 只改数据、画布不重绘。
 2. **坐标会被静默夹进 `Utils.canvasViewBox`**。越界不报错、`rendered` 仍是 true，位置全错。
    `pocli add` 会先判断目标点是否在视口内，不在就先 `Designer.fitTheCanvas()` 再放，并在输出里标 `fitted`。
 3. **Model 就绪 ≠ 画面已绘制**。此时截图是白屏。`shot` 会等状态栏「图形数」出现才截。
+4. **从零建的新图元必须带 `attribute.viewportRenderable = false`**。
+   渲染判据是 `rectCross(视口, shapeBox) || viewportRenderable === false` ——
+   缺这个字段且不在当前视口内，图元**永不渲染**（数据全在、画布全空）。
+   这是画图时最隐蔽的坑，症状是「明明创建成功了却看不见」。
 
 ## 已知限制
 
@@ -74,6 +113,15 @@ node bin/pocli.mjs read --json g.json    # 读结构（节点/连线/泳道/池�
 ```bash
 node test/selftest.mjs   # 24 项，无需浏览器
 node test/smoke.mjs      # 只读集成，约 3 秒
+```
+
+桥接层本身的测试在 DSH 侧（同一份源码，测得更多）：
+
+```bash
+cd ../dsh/skill/dsh-processon-diagram-editor
+node test/selftest.mjs    # 187 项
+node test/mutation.mjs    # 20 项变异测试
+node test/parity.mjs      # 校验 wb/pobridge.js 与 dsh 压缩版行为一致
 ```
 
 ## 部署到 WorkBuddy 技能

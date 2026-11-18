@@ -1,6 +1,6 @@
 ---
 name: dsh-processon-diagram-editor
-description: "在用户已打开的 ProcessOn 画布上做 AI 增量改图。读取现有泳道图/流程图结构（节点、连线、泳道、文字），直接在原画布上创建/修改/删除图元，改动红色高亮，多人协同实时可见。支持同时打开多张 ProcessOn 图时精确定位目标图。触发词：改这张流程图、在ProcessOn加一步、补充泳道图环节、AI改图、流程图增删改、把这段流程画进现有图。不用于从零新建整张图（那用 processon-diagram-generator）。"
+description: "在 ProcessOn 画布上读写流程图/泳道图 —— 既能改已有图，也能从零画整张新图。改图：读取现有结构（节点、连线、泳道、文字）后精确增删改，改动红色高亮、多人协同实时可见。画图：drawDiagram 从空白区域画出「泳道池+节点+连线」完整整图，支持 start/terminator 圆头端点、decision 真菱形、自动正交路由、拟人化间距与自适应尺寸、画完自动保存并校验落库。支持同时打开多张 ProcessOn 图时精确定位目标图。触发词：改这张流程图、在ProcessOn加一步、补充泳道图环节、AI改图、流程图增删改、把这段流程画进现有图、从零画流程图、画一张泳道图、在画布上画图、生成流程图到ProcessOn、复刻这张图。"
 ---
 
 # ProcessOn 画布编辑器（DSH 版）
@@ -220,7 +220,7 @@ await POBridge.saveAndVerify(15000);
 - 多标签场景精确定位目标图、视口跳转不打扰用户
 
 > 页面侧 JS 片段全部集中在本技能目录的 `lib/page.mjs`。**不要现场手写 JS** —— 用那里的函数，参数走 `JSON.stringify`。
-> 离线自检：`node test/selftest.mjs`（163 项）+ `node test/parity.mjs` + `node test/verify-pool.mjs`（33 项）—— 都不需要浏览器、不碰画布，本技能自带。
+> 离线自检：`node test/selftest.mjs`（187 项）+ `node test/parity.mjs` + `node test/verify-pool.mjs`（33 项）—— 都不需要浏览器、不碰画布，本技能自带。
 
 ---
 
@@ -658,7 +658,7 @@ var g = POBridge.getPoolRows('ai_pool_<时间戳>');
 ```bash
 cd dsh/skill/dsh-processon-diagram-editor
 node test/verify-pool.mjs      # 33 项：片段语法/转义 + 假运行时源码↔产物 parity + 真实字段不变量 + 边界守卫
-node test/selftest.mjs         # 163 项：片段/转义/守卫/自包含/书签版本/池片段/侧栏卡/文字定宽/验收判定
+node test/selftest.mjs         # 187 项：片段/转义/守卫/自包含/书签版本/池片段/侧栏卡/文字定宽/验收判定/表达式工厂
 node test/parity.mjs           # 源码与压缩产物行为一致（含泳道池断言）
 node ../../../bridge/build.mjs --check   # 产物未漂移（在 bridge/ 下运行亦可）
 ```
@@ -1363,7 +1363,7 @@ node tools/sync-skill.mjs          # 执行（自动备份 + 更新版本号 + �
 
 | 布局 | selftest | verify-pool |
 |---|---|---|
-| 仓库（`dsh/skill/...`） | **163 项全过** | **33 项全过** |
+| 仓库（`dsh/skill/...`） | **187 项全过** | **33 项全过** |
 | 独立安装（`~/.dsh/skills/...`） | **148 过 + 15 跳过** | 32 过 + 1 跳过 |
 
 跳过的那 15 项都是「源码里有没有某个常量/导出」这类断言 —— 独立安装时无从校验，跳过是对的。
@@ -2005,7 +2005,7 @@ node tools/sync-skill.mjs          # 默认目标 ~/.dsh/skills/dsh-processon-di
 node tools/sync-skill.mjs --dry    # 只看会改哪些文件，不落盘
 node tools/sync-skill.mjs --target <path>   # 自定义目标
 
-node test/selftest.mjs             # 163 项离线断言
+node test/selftest.mjs             # 187 项离线断言
 node test/verify-pool.mjs          # 33 项泳道池行数能力
 node test/parity.mjs               # 两个产物行为一致
 ```
